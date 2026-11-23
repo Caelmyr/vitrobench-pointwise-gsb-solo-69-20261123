@@ -1,7 +1,8 @@
 import {q,qa,icon,e,btn,link,badge,empty,option,img,field,textField,selectField,numField,checkField,areaField,api,request,date,n,percent,plot,stat,table} from "./widgets.js";
 import {resultCard,specimenResultRows} from "./results.js";
+import {renderSection,newPlanDialog,planCard,locateDialog,locateResultMarkup} from "./cutting.js";
 
-const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:""};
+const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:"",cuttingPlans:[],cuttingActive:null};
 const dialog=q("#dialog");
 const nav=[
   ["collection","Specimens","tiles"],
@@ -155,8 +156,12 @@ function measureControls() {
 }
 
 function measurements() {
-  return `<div class="grid-detail"><div>${state.result?resultCard(state.result,state.layer,state.tile.version):empty("Run a measurement to view its map and results.")}</div>
-    <div class="stack"><section class="card"><h3>Measure specimen</h3>${measureControls()}</section><section class="card"><h3>Saved measurements</h3>${specimenResultRows(state.results)}</section></div></div>`;
+  return `<div class="stack">
+    <div class="grid-detail"><div>${state.result?resultCard(state.result,state.layer,state.tile.version):empty("Run a measurement to view its map and results.")}</div>
+      <div class="stack"><section class="card"><h3>Measure specimen</h3>${measureControls()}</section><section class="card"><h3>Saved measurements</h3>${specimenResultRows(state.results)}</section></div></div>
+    ${renderSection(state.tile,state.cuttingPlans,state.results)}
+    ${state.cuttingActive?planCard(state.cuttingActive):""}
+  </div>`;
 }
 
 function evidencePage() {
@@ -250,8 +255,8 @@ function render() {
 
 async function gatherTile(token=travel) {
   const url=tileUrl();
-  const [results,packets,activity,refs,metrology]=await Promise.all([
-    api(url+"/results"),api(url+"/evidence"),api(url+"/activity"),api("/api/library"),api(url+"/metrology"),
+  const [results,packets,activity,refs,metrology,plans]=await Promise.all([
+    api(url+"/results"),api(url+"/evidence"),api(url+"/activity"),api("/api/library"),api(url+"/metrology"),api(url+"/cutting-plans"),
   ]);
   if (token!==travel) return;
   state.results=results.items;
@@ -259,6 +264,7 @@ async function gatherTile(token=travel) {
   state.activity=activity.items;
   state.metrology=metrology.items;
   state.refs=refs.items;
+  state.cuttingPlans=plans.items;
 }
 
 async function route() {
@@ -271,6 +277,7 @@ async function route() {
     if (token!==travel) return;
     if (state.tile?.id!==tile.id || state.page!=="tile") {
       state.tab="captures"; state.capture=null; state.result=null;state.layer="overlay";state.viewer="raw";state.metrologyActive=null;
+      state.cuttingActive=null;
     }
     state.tile=tile;
     await gatherTile(token);
@@ -624,6 +631,83 @@ async function studyForm() {
   studyOptions(q("#field-study_kind",dialog).value);
 }
 
+async function cuttingForm() {
+  const censuses=state.results.filter(item=>item.kind==="panes");
+  if (!censuses.length) throw Error("Save a Glass pane census before creating a cutting plan.");
+  const full=await Promise.all(censuses.map(item=>api("/api/results/"+item.id)));
+  const fullCensuses=Object.fromEntries(full.map(item=>[item.id,item]));
+  const dialogSpec=newPlanDialog(state.results,state.cuttingPlans,fullCensuses);
+  modal(dialogSpec.title,dialogSpec.body,"Build cutting plan",async data=>{
+    const censusId=data.get("census_result_id");
+    const grain_angles={};
+    for (const entry of data.entries()) {
+      const match=/^grain-(\d+)$/.exec(entry[0]);
+      if (match && Number(entry[1])!==0) grain_angles[match[1]]=Number(entry[1]);
+    }
+    const payload={
+      census_result_id:censusId,
+      title:data.get("title"),
+      strategy:data.get("strategy"),
+      sheet_width_mm:Number(data.get("sheet_width_mm")),
+      sheet_height_mm:Number(data.get("sheet_height_mm")),
+      kerf_mm:Number(data.get("kerf_mm")),
+      margin_mm:Number(data.get("margin_mm")),
+      grain_angles,
+    };
+    const plan=await api(tileUrl()+"/cutting-plans",{method:"POST",body:payload});
+    await gatherTile();
+    state.cuttingActive=plan;
+    commitModal();
+    toast(`Cutting plan drafted: ${plan.sheet_count} stock sheet(s).`);
+    render();
+  },true);
+  // Show only the grain grid matching the selected census.
+  const select=q("#cut-census-select");
+  const sync=()=>qa("[data-grain-for]",dialog).forEach(set=>{
+    set.style.display=set.dataset.grainFor===select.value?"":"none";
+  });
+  select?.addEventListener("change",sync);
+  sync();
+}
+
+function locateForm(planId) {
+  const plan=state.cuttingActive;
+  const spec=locateDialog(plan);
+  modal(spec.title,spec.body,null,async()=>{},true);
+  bindCuttingPick(planId);
+}
+
+function cuttingPointFromEvent(event) {
+  const imgEl=q("#cut-pick-stage img");
+  const rect=imgEl.getBoundingClientRect();
+  const u=Math.min(1,Math.max(0,(event.clientX-rect.left)/rect.width));
+  const v=Math.min(1,Math.max(0,(event.clientY-rect.top)/rect.height));
+  return [Number(u.toFixed(6)),Number(v.toFixed(6))];
+}
+
+function bindCuttingPick(planId) {
+  const stage=q("#cut-pick-stage");
+  stage?.addEventListener("click",function handler(event){
+    const pane=Number(q("#dialog-form [name=pane]").value);
+    void submitLocate(planId,pane,cuttingPointFromEvent(event));
+  });
+}
+
+async function submitLocate(planId,pane,point) {
+  const hint=q("#cut-pick-hint");
+  if (hint) hint.textContent="Looking up the point…";
+  try {
+    const res=await api(`/api/cutting-plans/${planId}/point`,{method:"POST",body:{pane,point}});
+    state.cuttingActive=res.plan;
+    const box=q("#cut-locate-result");
+    box.innerHTML=locateResultMarkup(res.query);
+    if (hint) hint.textContent=`Pane ${pane} at (${point[0]}, ${point[1]}) — click another point to look it up too.`;
+    await gatherTile();
+  } catch(err) {
+    if (hint) hint.textContent=err.message+" Click again inside the highlighted pane.";
+  }
+}
+
 function parsedOptions(data,tool) {
   return Object.fromEntries(Object.entries(tool.fields).map(([key,config])=>{
     if (config.kind==="point") return [key,[Number(data.get(key+"-0")),Number(data.get(key+"-1"))]];
@@ -742,6 +826,36 @@ async function doAction(name,target) {
     pin:pinForm,
     "study-add":studyForm,
     "study-open":()=>{state.study=state.studies.find(item=>item.id===id);render();},
+    "cut-new":cuttingForm,
+    "cut-open":async()=>{
+      state.cuttingActive=await api("/api/cutting-plans/"+id);
+      render();
+      q("#cutting-workspace")?.scrollIntoView({behavior:"smooth"});
+    },
+    "cut-adopt":async()=>{
+      const plan=state.cuttingPlans.find(item=>item.id===id)||state.cuttingActive;
+      modal("Adopt this cutting plan?",
+        `<p class="notice">Adoption freezes the layout for the workshop. Only one plan can be adopted at a time, and an adopted plan cannot be moved or re-laid.</p>`,
+        "Adopt plan",async()=>{
+          const updated=await api(`/api/cutting-plans/${id}/adopt`,{method:"POST",body:{version:plan.version}});
+          state.cuttingActive=updated;
+          await gatherTile();
+          commitModal();toast("Cutting plan adopted and frozen.");render();
+        });
+    },
+    "cut-retire":async()=>{
+      const plan=state.cuttingActive;
+      modal("Retire the adopted plan?",
+        `<p class="notice">Retiring releases the single adopted slot so another plan can be sent out. The retired document is retained for the record.</p>`,
+        "Retire plan",async()=>{
+          const updated=await api(`/api/cutting-plans/${id}/retire`,{method:"POST",body:{version:plan.version}});
+          state.cuttingActive=updated;
+          await gatherTile();
+          commitModal();toast("Cutting plan retired.");render();
+        });
+    },
+    "cut-locate":()=>locateForm(id),
+    "cut-back":()=>{state.cuttingActive=null;render();},
     close:commitModal,
   };
   if (functions[name]) await functions[name]();

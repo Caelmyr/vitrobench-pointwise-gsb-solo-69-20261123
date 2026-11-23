@@ -7,6 +7,7 @@ from flask import Blueprint, Flask, Response, jsonify, request, send_file, send_
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
 from .analysis import approve_reference, evaluate
+from . import cutting
 from .demo import load_training, preview_photo
 from .evidence import (
     artifact_json,
@@ -377,6 +378,52 @@ def register_artifacts(api, store, heavy):
         return binary_response(artifact_json(study), "application/json", name + ".json")
 
 
+def register_cutting(api, store, heavy):
+    @api.get("/specimens/<specimen_id>/cutting-plans")
+    def cutting_plans(specimen_id):
+        return jsonify({"items": store.list_cutting_plans(specimen_id)})
+
+    @api.post("/specimens/<specimen_id>/cutting-plans")
+    def cutting_plan_create(specimen_id):
+        with heavy:
+            plan = cutting.create_cutting_plan(store, json_request())
+        if plan["tile_id"] != specimen_id:
+            raise InputError("The chosen census does not belong to this specimen.")
+        return jsonify(plan), 201
+
+    @api.get("/cutting-plans/<plan_id>")
+    def cutting_plan_show(plan_id):
+        return jsonify(store.cutting_plan(plan_id))
+
+    @api.post("/cutting-plans/<plan_id>/adopt")
+    def cutting_plan_adopt(plan_id):
+        with heavy:
+            plan = cutting.adopt_cutting_plan(store, plan_id, json_request())
+        return jsonify(plan)
+
+    @api.post("/cutting-plans/<plan_id>/retire")
+    def cutting_plan_retire(plan_id):
+        with heavy:
+            plan = cutting.retire_cutting_plan(store, plan_id, json_request())
+        return jsonify(plan)
+
+    @api.post("/cutting-plans/<plan_id>/point")
+    def cutting_plan_point(plan_id):
+        with heavy:
+            plan, entry = cutting.record_point_query(store, plan_id, json_request())
+        return jsonify({"plan": plan, "query": entry})
+
+    @api.get("/cutting-plans/<plan_id>/sheet/<int:number>.png")
+    def cutting_plan_sheet(plan_id, number):
+        plan = store.cutting_plan(plan_id)
+        return image_response(cutting.render_sheet(plan, number))
+
+    @api.get("/cutting-plans/<plan_id>/source.png")
+    def cutting_plan_source(plan_id):
+        plan = store.cutting_plan(plan_id)
+        return png_blob(store, plan["source_overlay"])
+
+
 def register_desks(api, store, heavy):
     @api.get("/received")
     def received_list():
@@ -506,6 +553,7 @@ def create_app(data_dir=None):
     register_specimens(api, store, heavy)
     register_measurements(api, store, heavy)
     register_artifacts(api, store, heavy)
+    register_cutting(api, store, heavy)
     register_desks(api, store, heavy)
     app.register_blueprint(api)
     return app

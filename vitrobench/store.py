@@ -69,6 +69,14 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS cutting_plans (
+    id TEXT PRIMARY KEY,
+    tile_id TEXT NOT NULL REFERENCES specimens(id),
+    status TEXT NOT NULL,
+    document TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS cutting_plans_tile ON cutting_plans(tile_id, created_at DESC);
 """
 
 
@@ -474,3 +482,91 @@ class Store:
                 "SELECT document FROM metrology WHERE tile_id=? ORDER BY rowid DESC LIMIT 50", (chosen,),
             ).fetchall()
             return [json.loads(row["document"]) for row in rows]
+
+    def save_cutting_plan(self, fields):
+        record = {**fields, "id": make_id(), "created_at": timestamp(), "version": 1}
+        with self.transaction(write=True) as conn:
+            conn.execute(
+                "INSERT INTO cutting_plans(id,tile_id,status,document,created_at) VALUES (?,?,?,?,?)",
+                (record["id"], record["tile_id"], record["status"], document(record), record["created_at"]),
+            )
+            event(conn, record["tile_id"], "cutting",
+                  f"Drafted cutting plan '{record['title']}' ({record['sheet_count']} stock sheet(s))")
+        return record
+
+    def _cutting_plan(self, conn, identifier):
+        plan_id = identity(identifier, "Cutting plan ID")
+        row = conn.execute("SELECT document FROM cutting_plans WHERE id=?", (plan_id,)).fetchone()
+        return artifact_row(row, "Cutting plan")
+
+    def cutting_plan(self, identifier):
+        with self.connect() as conn:
+            return self._cutting_plan(conn, identifier)
+
+    def list_cutting_plans(self, tile_id):
+        chosen = identity(tile_id, "Specimen ID")
+        with self.connect() as conn:
+            self._tile(conn, chosen)
+            rows = conn.execute(
+                "SELECT document FROM cutting_plans WHERE tile_id=? ORDER BY rowid DESC LIMIT 50", (chosen,),
+            ).fetchall()
+            return [json.loads(row["document"]) for row in rows]
+
+    def adopted_cutting_plan(self, tile_id):
+        chosen = identity(tile_id, "Specimen ID")
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT document FROM cutting_plans WHERE tile_id=? AND status='adopted' LIMIT 1", (chosen,),
+            ).fetchone()
+            return json.loads(row["document"]) if row else None
+
+    def _update_cutting_plan(self, conn, plan, message):
+        plan["version"] += 1
+        conn.execute(
+            "UPDATE cutting_plans SET status=?, document=? WHERE id=?",
+            (plan["status"], document(plan), plan["id"]),
+        )
+        event(conn, plan["tile_id"], "cutting", message)
+        return plan
+
+    def adopt_cutting_plan(self, identifier, expected_version):
+        plan_id = identity(identifier, "Cutting plan ID")
+        with self.transaction(write=True) as conn:
+            plan = self._cutting_plan(conn, plan_id)
+            self.require_version(plan, expected_version)
+            if plan["status"] == "adopted":
+                return plan
+            existing = conn.execute(
+                "SELECT id FROM cutting_plans WHERE tile_id=? AND status='adopted'", (plan["tile_id"],),
+            ).fetchone()
+            if existing is not None:
+                raise ConflictError("Retire the currently adopted plan before adopting another one.")
+            plan["status"] = "adopted"
+            plan["adopted_at"] = timestamp()
+            return self._update_cutting_plan(conn, plan, f"Adopted cutting plan '{plan['title']}' for the workshop")
+
+    def retire_cutting_plan(self, identifier, expected_version):
+        plan_id = identity(identifier, "Cutting plan ID")
+        with self.transaction(write=True) as conn:
+            plan = self._cutting_plan(conn, plan_id)
+            self.require_version(plan, expected_version)
+            if plan["status"] != "adopted":
+                raise ConflictError("Only the adopted plan can be retired.")
+            plan["status"] = "retired"
+            plan["retired_at"] = timestamp()
+            return self._update_cutting_plan(conn, plan, f"Retired cutting plan '{plan['title']}'")
+
+    def append_cutting_query(self, identifier, expected_version, query):
+        plan_id = identity(identifier, "Cutting plan ID")
+        with self.transaction(write=True) as conn:
+            plan = self._cutting_plan(conn, plan_id)
+            self.require_version(plan, expected_version)
+            entry = {"recorded_at": timestamp(), **query}
+            plan.setdefault("queries", []).append(entry)
+            plan["version"] += 1
+            conn.execute("UPDATE cutting_plans SET document=? WHERE id=?", (document(plan), plan["id"]))
+            event(
+                conn, plan["tile_id"], "cutting",
+                f"Located pane {query['pane']} on stock sheet {query['sheet']} of '{plan['title']}'",
+            )
+            return plan, entry
