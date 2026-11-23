@@ -8,7 +8,8 @@ export function metricSet(record) {
   const rows = {
     panes: () => [["Pane candidates",m.pane_count],["Bounded in the table",m.bounded],["Unobserved pixels",m.unobserved_px]],
     came: () => [["Measured sections",m.measured_stations],["Median width",m.median_width == null ? "—" : n(m.median_width,3)+" "+m.length_unit]],
-    transmission: () => [["Clear reference",m.reference.region.name],["Reference luminance",n(m.reference.luma,4)],["Median density",n(m.median_density,4)]],
+    transmission: () => m.lights ? [["Match basis",m.match_title],["Cool median density",m.lights.cool.median_density==null?"—":n(m.lights.cool.median_density,4)],["Warm median density",m.lights.warm.median_density==null?"—":n(m.lights.warm.median_density,4)]]
+      : [["Clear reference",m.reference.region.name],["Reference luminance",n(m.reference.luma,4)],["Median density",n(m.median_density,4)]],
     color: () => [["Median L*",n(m.median_lab[0])],["Within-plane p90 ΔE",n(m.delta_e_from_tile_median["90"])],["Pixels measured",n(m.pixels,0)]],
     pores: () => [["Closed candidates",m.closed_count],["Truncated candidates",m.truncated_count],["Closed dark area",percent(m.closed_dark_percent)]],
     dots: () => [["Resolved grains",m.dot_count],["Median area (px²)",n(m.median_area_px,2)],["Resolved grain area",percent(m.ink_area_percent)]],
@@ -150,6 +151,13 @@ function cameWidthDetail(m) {
 }
 
 function transmissionDetail(m) {
+  if (m.lights) {
+    const cell=(entry,kind)=>entry==null?"—":(entry[kind]==null?"—":n(entry[kind],kind==="resolvable_px"?0:kind==="median_density"?4:2));
+    return `<h3>Transmission per lamp</h3><p class="plot-note">${e(m.note)}</p>
+      <div class="metrics">${stat("Cool reference luma",n(m.lights.cool.reference_luma,4))}${stat("Warm reference luma",n(m.lights.warm.reference_luma,4))}</div>
+      ${table(["Column","Cool px","Cool density","Cool transmission %","Warm px","Warm density","Warm transmission %"],
+        m.rows.map(row=>[row.station,cell(row.cool,"resolvable_px"),cell(row.cool,"median_density"),cell(row.cool,"median_transmission_pct"),cell(row.warm,"resolvable_px"),cell(row.warm,"median_density"),cell(row.warm,"median_transmission_pct")]))}`;
+  }
   return `<h3>Transmission across the panel</h3><p class="plot-note">${e(m.note)}</p>
     ${table(["Column","Visible above floor","Below floor","Unobserved","Median density","Transmission (%)"],
       m.rows.map(r=>[r.station,r.resolvable_px,r.below_floor_px,r.unobserved_px,r.median_density == null ? "—" : n(r.median_density,4),r.median_transmission_pct == null ? "—" : n(r.median_transmission_pct,2)]))}`;
@@ -191,6 +199,7 @@ export function resultCard(record, layer, currentRevision) {
       ["Supported area",percent(record.support.available_percent)],
       ["Clipped pixels",record.support.clipped_pixels],
       ["Neutral correction",record.provenance.neutral_card?.before_swatch || "Uncorrected"],
+      ...(record.provenance.match?[["Match basis",record.provenance.match.title]]:[]),
     ])}</details>
     <div class="actions">${link("Metrics CSV",path+"/metrics.csv","secondary","download")}${btn("Pin evidence","pin", "primary","archive")}</div>
   </section>`;

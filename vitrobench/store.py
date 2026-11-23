@@ -44,6 +44,11 @@ CREATE TABLE IF NOT EXISTS studies (
     document TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS matches (
+    id TEXT PRIMARY KEY,
+    document TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS events (
     seq INTEGER PRIMARY KEY,
     tile_id TEXT NOT NULL REFERENCES specimens(id),
@@ -404,6 +409,27 @@ class Store:
                 (study["id"], document(study), study["created_at"]),
             )
         return study
+
+    def save_match(self, fields):
+        record = {**fields, "id": make_id(), "created_at": timestamp()}
+        with self.transaction(write=True) as conn:
+            conn.execute(
+                "INSERT INTO matches(id,document,created_at) VALUES (?,?,?)",
+                (record["id"], document(record), record["created_at"]),
+            )
+            event(conn, record["original"]["tile_id"], "match", f"Recorded replacement match: {record['title']}")
+        return record
+
+    def match(self, identifier):
+        chosen = identity(identifier, "Match ID")
+        with self.connect() as conn:
+            row = conn.execute("SELECT document FROM matches WHERE id=?", (chosen,)).fetchone()
+            return artifact_row(row, "Replacement match")
+
+    def matches(self):
+        with self.connect() as conn:
+            rows = conn.execute("SELECT document FROM matches ORDER BY rowid DESC LIMIT 60").fetchall()
+            return [json.loads(row["document"]) for row in rows]
 
     def study(self, identifier):
         chosen = identity(identifier, "Study ID")

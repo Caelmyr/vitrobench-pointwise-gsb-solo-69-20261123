@@ -25,6 +25,8 @@ ID_RE = re.compile(r"^[0-9a-f]{24}$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 ROLE_LABELS = {
     "diffuse": "Transmitted or diffuse",
+    "cool": "Cool white light",
+    "warm": "Warm white light",
     "cross": "Cross-polarized",
     "parallel": "Parallel-polarized",
     "rake-left": "Raking light from left",
@@ -201,6 +203,29 @@ def flag_record_fields(payload):
     return {
         "decision": enumeration(data.get("decision"), ("confirm", "dismiss", "review"), "Decision"),
         "notes": string(data.get("notes"), "Observation notes", maximum=240, required=False),
+    }
+
+
+def match_piece_fields(value, label):
+    data = dictionary(value, label)
+    return {
+        "tile_id": identity(data.get("tile_id"), "Specimen ID"),
+        "region_id": identity(data.get("region_id"), "Comparison region"),
+        "clear_region_id": identity(data.get("clear_region_id"), "Clear glass reference"),
+    }
+
+
+def match_fields(payload):
+    data = dictionary(payload, "Replacement match")
+    candidates = collection(data.get("candidates"), "Replacement candidates", minimum=2, maximum=2)
+    return {
+        "title": string(data.get("title"), "Match title", maximum=100),
+        "notes": string(data.get("notes"), "Match notes", maximum=1200, required=False),
+        "minimum_common_visible": scalar(
+            data.get("minimum_common_visible"), "Minimum common visible ratio", lower=0.05, upper=1.0,
+        ),
+        "original": match_piece_fields(data.get("original"), "Original piece"),
+        "candidates": [match_piece_fields(item, "Replacement candidate") for item in candidates],
     }
 
 

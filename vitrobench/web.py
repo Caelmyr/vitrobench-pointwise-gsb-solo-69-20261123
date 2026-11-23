@@ -8,6 +8,7 @@ from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
 from .analysis import approve_reference, evaluate
 from .demo import load_training, preview_photo
+from .match import create_match, summarize_match
 from .evidence import (
     artifact_json,
     create_evidence,
@@ -306,6 +307,29 @@ def register_measurements(api, store, heavy):
         return png_blob(store, store.reference(reference_id)["annotated_digest"])
 
 
+def register_matches(api, store, heavy):
+    @api.get("/matches")
+    def match_list():
+        return jsonify({"items": [summarize_match(item) for item in store.matches()]})
+
+    @api.post("/matches")
+    def match_make():
+        with heavy:
+            record = create_match(store, json_request())
+        return jsonify(record), 201
+
+    @api.get("/matches/<match_id>")
+    def match_show(match_id):
+        return jsonify(store.match(match_id))
+
+    @api.get("/matches/<match_id>/sheet/<int:number>")
+    def match_sheet(match_id, number):
+        record = store.match(match_id)
+        if not 1 <= number <= len(record["sheets"]):
+            raise MissingError("Match sheet not found.")
+        return png_blob(store, record["sheets"][number - 1])
+
+
 def register_artifacts(api, store, heavy):
     @api.get("/specimens/<specimen_id>/evidence")
     def packets(specimen_id):
@@ -505,6 +529,7 @@ def create_app(data_dir=None):
     register_training(api, store, heavy)
     register_specimens(api, store, heavy)
     register_measurements(api, store, heavy)
+    register_matches(api, store, heavy)
     register_artifacts(api, store, heavy)
     register_desks(api, store, heavy)
     app.register_blueprint(api)

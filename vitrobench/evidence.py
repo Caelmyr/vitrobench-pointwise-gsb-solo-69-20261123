@@ -47,9 +47,20 @@ def result_metrics_table(record):
         columns = ("unit", *fields)
         rows = ([metrics["length_unit"], *(item[key] for key in fields)] for item in metrics["rows"])
     elif kind == "transmission":
-        columns = ("station", "columns", "resolvable_px", "below_floor_px", "unobserved_px",
-                   "median_density", "median_transmission_pct")
-        rows = ([item[key] for key in columns] for item in metrics["rows"])
+        if "lights" in metrics:
+            per_light = ("resolvable_px", "below_floor_px", "unobserved_px", "median_density", "median_transmission_pct")
+            columns = ("station", "columns", *(f"{role}_{key}" for role in ("cool", "warm") for key in per_light))
+            rows = []
+            for item in metrics["rows"]:
+                row = [item["station"], item["columns"]]
+                for role in ("cool", "warm"):
+                    entry = item[role] or {}
+                    row.extend(entry.get(key) for key in per_light)
+                rows.append(row)
+        else:
+            columns = ("station", "columns", "resolvable_px", "below_floor_px", "unobserved_px",
+                       "median_density", "median_transmission_pct")
+            rows = ([item[key] for key in columns] for item in metrics["rows"])
     elif kind == "profile":
         columns = (
             "position", "position_unit", "relative_position", "samples", "lightness", "a", "b", "intensity",
@@ -336,7 +347,7 @@ def summarize_result(record):
         "id", "kind", "label", "tile_id", "source_version", "created_at", "version", "basis",
     )}
     summary["tile_name"] = record["provenance"]["specimen"]["name"]
-    summary["brief"] = {key: record["metrics"][key] for key in metrics}
+    summary["brief"] = {key: record["metrics"].get(key) for key in metrics}
     summary["overlay_url"] = f"/api/results/{record['id']}/image/overlay"
     return summary
 

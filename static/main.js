@@ -1,11 +1,12 @@
-import {q,qa,icon,e,btn,link,badge,empty,option,img,field,textField,selectField,numField,checkField,areaField,api,request,date,n,percent,plot,stat,table} from "./widgets.js";
+import {q,qa,icon,e,btn,link,badge,empty,option,img,field,textField,selectField,numField,checkField,areaField,api,request,date,n,percent,plot,stat,table,dots} from "./widgets.js";
 import {resultCard,specimenResultRows} from "./results.js";
 
-const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:""};
+const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],matches:[],match:null,query:""};
 const dialog=q("#dialog");
 const nav=[
   ["collection","Specimens","tiles"],
   ["references","Reference library","book"],
+  ["matches","Replacement match","compare"],
   ["studies","Panel studies","plot"],
   ["received","Received evidence","archive"],
 ];
@@ -133,6 +134,7 @@ function optionInput(key,item) {
   if (kind==="flag") return checkField(label,key,value);
   if (kind==="region") return selectField(label,key,option("","Auto / current area","")+state.tile.regions.filter(record=>item.purpose?record.purpose===item.purpose:record.purpose!=="ignore").map(record=>option(record.id,record.name)).join(""));
   if (kind==="reference") return selectField(label,key,option("","Choose a reference","")+state.refs.map(record=>option(record.id,record.title)).join(""));
+  if (kind==="match") return selectField(label,key,option("","None — use a clear glass region","")+state.matches.filter(record=>record.original_tile_id===state.tile.id).map(record=>option(record.id,record.title+(record.adopted_name?` · adopted ${record.adopted_name}`:""))).join(""));
   if (kind==="point") return `<div class="field"><span>${e(label)} (X, Y)</span><div class="point-group">
     ${value.map((coordinate,index)=>`<input name="${key}-${index}" aria-label="${e(label)} ${index===0?"X":"Y"}" type="number" min="0" max="1" step=".001" value="${coordinate}">`).join("")}</div></div>`;
   return "";
@@ -226,6 +228,48 @@ function libraryPage() {
     <div class="actions">${link("Open specimen","#tile:"+ref.tile_id,"secondary","tiles")}${btn("Retire","reference-retire","ghost",null,`data-id="${ref.id}"`)}</div></article>`).join("")}</div>`:empty("Approve a visual reference from a specimen with a registered capture.",link("Open specimens","#collection","primary","tiles"))}`;
 }
 
+function matchDetail(record) {
+  const decision=record.decision;
+  const pieces=[["Original",record.original],["Candidate A",record.candidates[0]],["Candidate B",record.candidates[1]]];
+  return `<section class="card stack"><div class="title-row"><div><h3>${e(record.title)}</h3><small>${e(date(record.created_at))} · minimum common visible ${n(100*record.minimum_common_visible,0)}%</small></div>
+    ${decision.adopted_name?badge("Adopted: "+decision.adopted_name,"ready"):badge("No adoption","caution")}</div>
+    <p class="notice">${e(decision.explanation)}</p>
+    <p class="soft">${e(record.rule)}</p>
+    ${table(["Candidate","Cool ΔE","Warm ΔE","Worst-case ΔE","Common visible","Evidence"],record.candidates.map(item=>[
+      item.tile_name,
+      item.delta_e?n(item.delta_e.cool,2):"—",
+      item.delta_e?n(item.delta_e.warm,2):"—",
+      item.worst_delta_e==null?"—":n(item.worst_delta_e,2),
+      percent(100*item.common_ratio),
+      item.qualified?"Qualified":(item.note||"Insufficient"),
+    ]))}
+    <h3>Normalized color per lamp</h3>
+    <div class="divider-list">${pieces.map(([label,item])=>`<div class="row"><div class="grow"><strong>${e(label)} · ${e(item.tile_name)}</strong><br><small>${e(item.region.name)} · clear reference ${e(item.clear_region.name)}</small></div>
+      <span class="swatches">${dots("Cool",item.lights.cool.swatch||"#242b2b")} ${dots("Warm",item.lights.warm.swatch||"#242b2b")}</span></div>`).join("")}</div>
+    ${record.sheets.map((_,index)=>img(`/api/matches/${record.id}/sheet/${index+1}`,`Marked position on piece ${index+1}`)).join("")}
+    <details><summary>Frozen match basis</summary>${table(["Piece","Lamp","Capture","Digest","Clear luma","Visible in both lamps"],
+      pieces.flatMap(([label,item])=>["cool","warm"].map(role=>[
+        `${label} · ${item.tile_name}`,
+        role==="cool"?"Cool white":"Warm white",
+        item.lights[role].photo.name,
+        item.lights[role].photo.source_digest.slice(0,12)+"…",
+        n(item.lights[role].clear.luma,4),
+        `${n(item.common_px,0)} px (${percent(100*item.common_ratio)})`,
+      ])))}</details>
+    <div class="actions">${btn("Back to matches","matches-list","secondary","back")}</div></section>`;
+}
+
+function matchesPage() {
+  const actions=btn("New match","match-add","primary","plus");
+  const view=state.match?matchDetail(state.match)
+    :state.matches.length?`<section class="card"><h3>Saved matches</h3><div class="divider-list">${state.matches.map(item=>`<div class="row"><div class="grow"><strong>${e(item.title)}</strong><br><small>${e(item.original_name)} vs ${e(item.candidate_names.join(" · "))} · ${e(date(item.created_at))}</small></div>
+      ${item.adopted_name?badge(item.adopted_name,"ready"):badge("No adoption","caution")}
+      ${btn("Open","match-open","tiny secondary",null,`data-id="${item.id}"`)}</div>`).join("")}</div></section>`
+    :empty("Record a replacement match to adopt one of two candidate pieces against the original remnant under both lamps.",actions);
+  return `<header class="page-head"><div><h1>Replacement match</h1><p>Compare two candidate pieces with the original remnant under cool and warm lamps, each lamp against its own clear-glass reference, and adopt a single replacement.</p></div>${actions}</header>
+    <div class="grid-detail">${view}<section class="card"><h3>How it works</h3><p class="soft">Each piece needs one registered cool-white and one registered warm-white capture, a marked comparison position and a clear-glass reference region. Only positions clearly visible under both lamps are compared, and candidates below the minimum common visible ratio are disqualified. The adopted basis stays frozen: later captures or redrawn regions never rewrite a saved match.</p></section></div>`;
+}
+
 function studyPanel() {
   const report=state.study;
   if (!report) return empty("Select specimens with saved measurements, then build a study.");
@@ -245,13 +289,13 @@ function studyPage() {
 
 function render() {
   chrome();
-  q("#main").innerHTML={collection,tile:tilePage,references:libraryPage,studies:studyPage,received:receivedPage}[state.page]();
+  q("#main").innerHTML={collection,tile:tilePage,references:libraryPage,matches:matchesPage,studies:studyPage,received:receivedPage}[state.page]();
 }
 
 async function gatherTile(token=travel) {
   const url=tileUrl();
-  const [results,packets,activity,refs,metrology]=await Promise.all([
-    api(url+"/results"),api(url+"/evidence"),api(url+"/activity"),api("/api/library"),api(url+"/metrology"),
+  const [results,packets,activity,refs,metrology,matches]=await Promise.all([
+    api(url+"/results"),api(url+"/evidence"),api(url+"/activity"),api("/api/library"),api(url+"/metrology"),api("/api/matches"),
   ]);
   if (token!==travel) return;
   state.results=results.items;
@@ -259,6 +303,7 @@ async function gatherTile(token=travel) {
   state.activity=activity.items;
   state.metrology=metrology.items;
   state.refs=refs.items;
+  state.matches=matches.items;
 }
 
 async function route() {
@@ -280,6 +325,18 @@ async function route() {
   if (hash==="references") {
     const refs=await api("/api/library");
     if (token===travel) {state.refs=refs.items;state.page="references";render();}
+    return;
+  }
+  if (hash==="matches") {
+    const rows=await api("/api/matches");
+    if (token===travel) {state.matches=rows.items;state.match=null;state.page="matches";render();}
+    return;
+  }
+  if (hash.startsWith("match:")) {
+    const id=hash.slice(6);
+    if (!/^[a-f0-9]{24}$/.test(id)) throw Error("This match link is invalid.");
+    const record=await api("/api/matches/"+id);
+    if (token===travel) {state.match=record;state.page="matches";render();}
     return;
   }
   if (hash==="studies") {
@@ -490,6 +547,31 @@ function refForm() {
       commitModal();
       toast("Visual reference approved.");
     });
+}
+
+async function matchForm() {
+  const tiles=(await api("/api/specimens")).items;
+  if (!tiles.length) throw Error("Add specimens with cool and warm captures first.");
+  const block=(key,label)=>`<fieldset class="match-piece"><legend>${e(label)}</legend>
+    ${field("Specimen",`${key}_tile`,`<select id="field-${key}_tile" name="${key}_tile" data-match-tile="${key}">${option("","Choose a specimen","")+tiles.map(item=>option(item.id,item.name)).join("")}</select>`)}
+    ${selectField("Comparison position",`${key}_region`,"")}
+    ${selectField("Clear glass reference",`${key}_clear`,"")}
+  </fieldset>`;
+  modal("New replacement match",`
+    ${textField("Match title","title","Replacement match",'required maxlength="100"')}
+    ${block("original","Original remnant")}${block("cand_a","Candidate A")}${block("cand_b","Candidate B")}
+    ${numField("Minimum common visible %","minimum",55,5,100,1)}
+    <p class="notice">Each piece needs one registered cool-white and one registered warm-white capture. Only positions clearly visible under both lamps are compared; each lamp is normalized against its own clear-glass reference.</p>`,
+    "Run match",async data=>{
+      const piece=key=>({tile_id:data.get(`${key}_tile`),region_id:data.get(`${key}_region`),clear_region_id:data.get(`${key}_clear`)});
+      const record=await api("/api/matches",{method:"POST",body:{
+        title:data.get("title"),minimum_common_visible:Number(data.get("minimum"))/100,
+        original:piece("original"),candidates:[piece("cand_a"),piece("cand_b")],
+      }});
+      commitModal();
+      location.hash="match:"+record.id;
+      toast("Replacement match recorded.");
+    },true);
 }
 
 function pairForm() {
@@ -740,6 +822,9 @@ async function doAction(name,target) {
       render();
     },
     pin:pinForm,
+    "match-add":matchForm,
+    "match-open":()=>{location.hash="match:"+id;},
+    "matches-list":()=>{location.hash="matches";},
     "study-add":studyForm,
     "study-open":()=>{state.study=state.studies.find(item=>item.id===id);render();},
     close:commitModal,
@@ -817,6 +902,18 @@ document.addEventListener("change",event=>{
     q("#field-kind")?.focus();
   }
   if (event.target.id==="field-study_kind") studyOptions(event.target.value);
+  if (event.target.dataset.matchTile) {
+    const key=event.target.dataset.matchTile;
+    const fill=async()=>{
+      const regionSelect=q(`#field-${key}_region`,dialog);
+      const clearSelect=q(`#field-${key}_clear`,dialog);
+      if (!event.target.value) {regionSelect.innerHTML="";clearSelect.innerHTML="";return;}
+      const tile=await api(`/api/specimens/${event.target.value}`);
+      regionSelect.innerHTML=option("","Choose a position","")+tile.regions.filter(item=>item.purpose!=="ignore").map(item=>option(item.id,item.name)).join("");
+      clearSelect.innerHTML=option("","Choose clear glass","")+tile.regions.filter(item=>item.purpose==="bare").map(item=>option(item.id,item.name)).join("");
+    };
+    void fill().catch(displayFault);
+  }
 });
 
 dialog.addEventListener("close",()=>{

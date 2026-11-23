@@ -201,9 +201,10 @@ TOOLS.update({
     },
     "transmission": {
         "label": "Relative transmission",
-        "description": "Read relative optical density across the glass using a clear-glass control in the same exposure.",
+        "description": "Read relative optical density across the glass using a clear-glass control in the same exposure. With an adoption basis, report each lamp of the frozen match separately.",
         "fields": {
             "clear_region": {"kind": "region", "purpose": "bare", "label": "Clear glass control", "default": None},
+            "match_id": {"kind": "match", "label": "Adoption basis (frozen match)", "default": None},
             "floor": {"kind": "number", "label": "Sensor floor", "default": .021, "min": .001, "max": .50, "step": .001},
             "cells": {"kind": "integer", "label": "Columns to report", "default": 12, "min": 3, "max": 80},
         },
@@ -227,6 +228,8 @@ def parsed_option(key, field, raw):
         return identity(raw, label) if raw else None
     if kind == "reference":
         return identity(raw, label)
+    if kind == "match":
+        return identity(raw, label) if raw else None
     raise RuntimeError(f"Unknown measurement option {key}.")
 
 

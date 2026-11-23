@@ -27,6 +27,7 @@ from .rim import measure_rim
 from .glass import came_width, glass_panes, transmitted_density
 from .geometry import active_region, analysis_mask, region_domain, specimen_frame
 from .lighting import measure_direction, measure_glare
+from .match import matched_frames, transmission_by_match
 from .model import ANALYSIS_LABELS, InputError, library_fields
 from .parameters import TOOLS, analysis_parameters
 from .profile import measure_profile
@@ -288,17 +289,27 @@ def evaluate(store, tile_id, payload):
     cached = store.get_cached_result(cache_key)
     if cached:
         return cached
-    frame = specimen_frame(store.blobs, tile, params["photo_id"])
-    region = active_region(tile, params["region_id"])
-    area = region_domain(frame.extent, tile, region)
-    pair = specimen_frame(store.blobs, tile, params["comparison_id"]) if params["comparison_id"] else None
+    match_record = None
     correction = None
-    linear = frame.linear
-    if pair is not None:
-        metrics, picture, legend = compute_pair(tile, frame, pair, area, params)
+    if params["kind"] == "transmission" and params["options"].get("match_id"):
+        match_record = store.match(params["options"]["match_id"])
+        frames = matched_frames(store, tile, match_record)
+        frame, pair = frames["cool"], frames["warm"]
+        region = active_region(tile, params["region_id"])
+        area = region_domain(frame.extent, tile, region)
+        linear = frame.linear
+        metrics, picture, legend = transmission_by_match(frames, match_record, area, params["options"])
     else:
-        linear, correction = corrected_linear(tile, frame, params["apply_neutral"])
-        metrics, picture, legend = compute_single(store, tile, frame, region, area, linear, correction, params, reference)
+        frame = specimen_frame(store.blobs, tile, params["photo_id"])
+        region = active_region(tile, params["region_id"])
+        area = region_domain(frame.extent, tile, region)
+        pair = specimen_frame(store.blobs, tile, params["comparison_id"]) if params["comparison_id"] else None
+        linear = frame.linear
+        if pair is not None:
+            metrics, picture, legend = compute_pair(tile, frame, pair, area, params)
+        else:
+            linear, correction = corrected_linear(tile, frame, params["apply_neutral"])
+            metrics, picture, legend = compute_single(store, tile, frame, region, area, linear, correction, params, reference)
     result = {
         "tile_id": tile_id,
         "source_version": tile["version"],
@@ -324,6 +335,13 @@ def evaluate(store, tile_id, payload):
                 "capture": reference["source"],
                 "basis": reference["basis"],
             } if reference else None,
+            "match": {
+                "id": match_record["id"],
+                "title": match_record["title"],
+                "created_at": match_record["created_at"],
+                "adopted_tile_id": match_record["decision"]["adopted_tile_id"],
+                "adopted_name": match_record["decision"]["adopted_name"],
+            } if match_record else None,
         },
         "pictures": {
             "source": stored_preview(base_rgba(frame, linear), store.blobs),
