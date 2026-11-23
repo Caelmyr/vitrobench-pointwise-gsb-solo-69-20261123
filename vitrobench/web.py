@@ -22,7 +22,7 @@ from .evidence import (
 from .inspection import side_preview, viewing_pair
 from .art import base_rgba
 from .intake import MAX_ARCHIVE_BYTES, inspect_packet
-from .metrology import create_metrology
+from .metrology import attach_fit, create_metrology
 from .model import (
     ANALYSIS_LABELS,
     MAX_UPLOAD,
@@ -415,6 +415,11 @@ def register_desks(api, store, heavy):
         with heavy:
             record = create_metrology(store, specimen_id, json_request())
         return jsonify(record), 201
+
+    @api.post("/metrology/<entry_id>/fit")
+    def geometry_fit(entry_id):
+        record, created = attach_fit(store, entry_id, json_request())
+        return jsonify(record), 201 if created else 200
 
     @api.get("/metrology/<entry_id>/overlay.png")
     def geometry_artifact(entry_id):

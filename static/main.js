@@ -174,20 +174,36 @@ function geometryPage() {
   if (record) {
     const metrics=record.shape;
     const base=`/api/metrology/${record.id}`;
+    const fit=record.mode==="trace"?record.fit:null;
     const stats=record.mode==="trace"
-      ? [["Trace length",`${n(metrics.trace_length)} ${metrics.length_unit}`],["Supported stations",percent(metrics.overall_support)]]
+      ? [["Trace length",`${n(metrics.trace_length)} ${metrics.length_unit}`],["Supported stations",percent(metrics.overall_support)],
+        ...(fit?[["Adopted stock",`${n(fit.stock_mm,1)} mm`],["Fit interval",`${n(fit.interval.start_mm,1)}–${n(fit.interval.end_mm,1)} mm`],["Trace in interval",`${n(fit.fit_mm,1)} mm`],["Not photographed",`${n(fit.unphotographed_mm,1)} mm`]]:[])]
       : [["Marked area",`${n(metrics.vector_outline_area)} ${metrics.units}`],["Visible area",`${n(metrics.raster_supported_area)} ${metrics.units}`],["Outline",`${n(metrics.outline_length)} ${metrics.outline_unit}`]];
     const stations=record.mode==="trace"?metrics.segments:metrics.outline_segments;
+    const fitBySegment=fit?new Map(fit.segments.map(item=>[item.index,item])):null;
+    const segmentRows=stations.map(item=>{
+      const row=[item.index,`${n(item.length)} ${item.units}`,n(item.clockwise_heading)+"°"];
+      if (!fitBySegment) return row;
+      const segment=fitBySegment.get(item.index);
+      const gaps=(segment?.unphotographed_ranges_mm||[]).map(([low,high])=>`${n(low,1)}–${n(high,1)}`).join(", ");
+      return [...row,
+        segment?`${n(segment.fit_mm,1)} mm`:"—",
+        segment?.edge_crossings.length?segment.edge_crossings.map(cross=>`${n(cross.at_mm,1)} mm · ${cross.boundary}`).join("; "):"—",
+        segment?`${n(segment.unphotographed_mm,1)} mm${gaps?` · ${gaps}`:""}`:"—"];
+    });
     report=`<section class="card stack"><h3>${e(record.title)}</h3>
       <figure class="stage">${img(base+"/overlay.png",record.title)}</figure>
       <div class="metrics">${stats.map(([name,value])=>stat(name,value)).join("")}</div>
-      ${table(["Segment","Length","Heading"],stations.map(item=>[item.index,`${n(item.length)} ${item.units}`,n(item.clockwise_heading)+"°"]))}
-      <div class="actions">${link("Measurement JSON",base+"/data.json","secondary","download")}</div></section>`;
+      ${fit?`<h3>Adopted came trial fit</h3><p class="notice">${e(fit.rationale)}</p>`:""}
+      ${table(fitBySegment?["Segment","Length","Heading","In fit interval","Interval edge","Not photographed"]:["Segment","Length","Heading"],segmentRows)}
+      ${fit?`<p class="soft">Interval-edge crossings are where the adopted interval begins or ends on the trace; the fitted came butts the edge there. Copied from the came width survey · ${e(date(fit.attached_at))}. The trace, the adopted stock width and the interval stay as saved when new regions or measurements are added.</p>`:""}
+      <div class="actions">${link("Measurement JSON",base+"/data.json","secondary","download")}
+      ${record.mode==="trace"&&!record.fit?btn("Attach trial fit","fit-attach","secondary","measure"):""}</div></section>`;
   }
   return `<div class="grid-detail">${report}<div class="stack"><section class="card"><h3>Measure a visible shape</h3>
       <p class="soft">Trace along the image or measure visible support inside a saved sampling region.</p>
       <div class="actions">${btn("Trace a path","trace-add","primary","measure")}${btn("Measure region area","area-add","secondary","frame")}</div></section>
-      <section class="card"><h3>Saved geometry</h3><div class="divider-list">${results.map(item=>`<div class="row"><div class="grow">${e(item.title)}<br><small>${e(item.mode)} · revision ${item.specimen.version}</small></div>${btn("Open","metrology-open","tiny secondary",null,`data-id="${item.id}"`)}</div>`).join("")||"<p class='soft'>No saved outlines.</p>"}</div></section></div></div>`;
+      <section class="card"><h3>Saved geometry</h3><div class="divider-list">${results.map(item=>`<div class="row"><div class="grow">${e(item.title)}<br><small>${e(item.mode)} · revision ${item.specimen.version}${item.fit?" · trial fit":""}</small></div>${btn("Open","metrology-open","tiny secondary",null,`data-id="${item.id}"`)}</div>`).join("")||"<p class='soft'>No saved outlines.</p>"}</div></section></div></div>`;
 }
 
 function receivedPage() {
@@ -535,6 +551,24 @@ function geometryMeasurementForm(mode) {
   if (!area) prepareDrawing([],45);
 }
 
+function fitAttachForm(record) {
+  if (!record || record.mode!=="trace") throw Error("Open a saved trace before attaching a trial fit.");
+  const candidates=state.results.filter(item=>item.kind==="came"&&item.brief?.trial_fit?.adopted);
+  if (!candidates.length) throw Error("Save a came width survey with an adopted trial fit first.");
+  modal("Attach adopted trial fit",`<p class="notice">The adopted stock width and interval are copied onto this trace and stay as saved. The traced path itself is not altered.</p>
+    ${selectField("Came width survey","result_id",candidates.map(item=>{
+      const adopted=item.brief.trial_fit.adopted;
+      return option(item.id,`${date(item.created_at)} · stock ${adopted.stock} ${n(adopted.stock_mm,1)} mm · ${n(adopted.interval.length_mm,1)} mm interval`);
+    }).join(""))}`,
+    "Attach trial fit",async data=>{
+      state.metrologyActive=await api(`/api/metrology/${record.id}/fit`,{method:"POST",body:{result_id:data.get("result_id")}});
+      await gatherTile();
+      commitModal();
+      toast("Trial fit attached to the trace.");
+      render();
+    });
+}
+
 function importEvidence() {
   modal("Verify evidence ZIP",field("Evidence ZIP","packet",'<input id="field-packet" name="packet" type="file" accept="application/zip,.zip" required>')+
     '<p class="soft">Select a VitroBench inspection archive up to 24 MiB. The viewer checks the declared images against their embedded digests.</p>',
@@ -714,6 +748,7 @@ async function doAction(name,target) {
     "trace-add":()=>geometryMeasurementForm("trace"),
     "area-add":()=>geometryMeasurementForm("area"),
     "metrology-open":()=>{state.metrologyActive=state.metrology.find(item=>item.id===id);render();},
+    "fit-attach":()=>fitAttachForm(state.metrologyActive),
     "receive-add":importEvidence,
     "received-open":()=>{state.receivedActive=state.received.find(item=>item.id===id);render();},
     "defect-note":()=>{

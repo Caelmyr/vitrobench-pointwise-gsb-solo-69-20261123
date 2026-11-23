@@ -7,7 +7,8 @@ export function metricSet(record) {
   const m = record.metrics;
   const rows = {
     panes: () => [["Pane candidates",m.pane_count],["Bounded in the table",m.bounded],["Unobserved pixels",m.unobserved_px]],
-    came: () => [["Measured sections",m.measured_stations],["Median width",m.median_width == null ? "—" : n(m.median_width,3)+" "+m.length_unit]],
+    came: () => [["Measured sections",m.measured_stations],["Median width",m.median_width == null ? "—" : n(m.median_width,3)+" "+m.length_unit],
+      ["Adopted trial fit",m.trial_fit?.adopted ? `${n(m.trial_fit.adopted.stock_mm,1)} mm stock · ${n(m.trial_fit.adopted.interval.length_mm,1)} mm run` : "—"]],
     transmission: () => [["Clear reference",m.reference.region.name],["Reference luminance",n(m.reference.luma,4)],["Median density",n(m.median_density,4)]],
     color: () => [["Median L*",n(m.median_lab[0])],["Within-plane p90 ΔE",n(m.delta_e_from_tile_median["90"])],["Pixels measured",n(m.pixels,0)]],
     pores: () => [["Closed candidates",m.closed_count],["Truncated candidates",m.truncated_count],["Closed dark area",percent(m.closed_dark_percent)]],
@@ -144,8 +145,26 @@ function glassPaneDetail(m) {
       m.rows.map(row=>[row.pane,row.pixels,row.area_mm2 == null ? "—" : n(row.area_mm2,2),row.state,n(row.transmitted_luma,4)]))}`;
 }
 
+function trialFitDetail(fit) {
+  if (!fit) return "";
+  if (!fit.available) return `<h3>Came replacement trial fit</h3><p class="plot-note">${e(fit.decision || fit.note)}</p>`;
+  const rows=fit.stocks.map(stock=>[
+    `Stock ${stock.key}`,n(stock.stock_mm,1),n(stock.required_mm,2),stock.fitting_stations,
+    stock.best_run?n(stock.best_run.length_mm,1):"—",
+    stock.best_run?`${n(stock.best_run.start_mm,1)}–${n(stock.best_run.end_mm,1)}`:"—",
+    stock.best_run?n(stock.best_run.mean_spare_mm,2):"—",
+    stock.qualified?"yes":"no"]);
+  const adopted=fit.adopted;
+  return `<h3>Came replacement trial fit</h3><p class="plot-note">${e(fit.note)}</p>
+    <div class="metrics">${stat("Side margin",n(fit.margin_mm,2)+" mm")}${stat("Minimum continuous fit",n(fit.min_run_mm,0)+" mm")}${stat("Surveyed line",n(fit.line_length_mm,1)+" mm")}</div>
+    ${table(["Stock","Width (mm)","Needed with margins (mm)","Fitting stations","Longest run (mm)","Run along line (mm)","Spare per side (mm)","Qualifies"],rows)}
+    ${adopted?`<div class="metrics">${stat("Adopted stock",`${adopted.stock} · ${n(adopted.stock_mm,1)} mm`)}${stat("Adopted interval",`${n(adopted.interval.start_mm,1)}–${n(adopted.interval.end_mm,1)} mm`)}${stat("Interval length",n(adopted.interval.length_mm,1)+" mm")}</div>`:""}
+    <p class="notice">${e(fit.decision)}</p>`;
+}
+
 function cameWidthDetail(m) {
   return `<h3>Transverse came sections</h3><p class="plot-note">${e(m.note)}</p>
+    ${trialFitDetail(m.trial_fit)}
     ${table(["Station",`Width (${m.length_unit})`,"Evidence"],m.rows.map(row=>[row.station,row.width == null ? "—" : n(row.width,3),row.state]))}`;
 }
 

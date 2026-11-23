@@ -311,7 +311,7 @@ def evidence_zip(store, entry):
 def summarize_result(record):
     metrics = {
         "panes": ("pane_count", "bounded", "unobserved_px"),
-        "came": ("measured_stations", "median_width", "length_unit"),
+        "came": ("measured_stations", "median_width", "length_unit", "trial_fit"),
         "transmission": ("median_density", "reference"),
         "color": ("median_lab", "swatch", "delta_e_from_tile_median"),
         "pores": ("closed_count", "truncated_count", "closed_dark_percent", "unobserved_pixels"),
@@ -336,7 +336,7 @@ def summarize_result(record):
         "id", "kind", "label", "tile_id", "source_version", "created_at", "version", "basis",
     )}
     summary["tile_name"] = record["provenance"]["specimen"]["name"]
-    summary["brief"] = {key: record["metrics"][key] for key in metrics}
+    summary["brief"] = {key: record["metrics"].get(key) for key in metrics}
     summary["overlay_url"] = f"/api/results/{record['id']}/image/overlay"
     return summary
 

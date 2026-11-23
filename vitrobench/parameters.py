@@ -190,13 +190,19 @@ TOOLS.update({
     },
     "came": {
         "label": "Came width survey",
-        "description": "Mark a straight section of leading. A station needs photographed transitions to glass on both sides to receive a width.",
+        "description": "Mark a straight section of leading. A station needs photographed transitions to glass on both sides to receive a width. "
+                       "With two stock widths, a per-side margin and a minimum continuous length, the survey also records one adopted trial-fit "
+                       "decision for came replacement.",
         "fields": {
             "start": {"kind": "point", "label": "Came start", "default": [.14, .454]},
             "end": {"kind": "point", "label": "Came end", "default": [.85, .454]},
             "cutoff": {"kind": "number", "label": "Dark came cutoff", "default": .060, "min": .010, "max": .45, "step": .005},
             "reach_px": {"kind": "integer", "label": "Section radius (plane pixels)", "default": 20, "min": 6, "max": 90},
             "stations": {"kind": "integer", "label": "Cross-sections", "default": 44, "min": 5, "max": 180},
+            "stock_a_mm": {"kind": "number", "label": "Stock width A (mm)", "default": 2.0, "min": .5, "max": 30, "step": .1},
+            "stock_b_mm": {"kind": "number", "label": "Stock width B (mm)", "default": 2.5, "min": .5, "max": 30, "step": .1},
+            "margin_mm": {"kind": "number", "label": "Side margin each side (mm)", "default": .25, "min": 0, "max": 10, "step": .05},
+            "min_run_mm": {"kind": "number", "label": "Minimum continuous trial length (mm)", "default": 40, "min": 1, "max": 2000, "step": 1},
         },
     },
     "transmission": {

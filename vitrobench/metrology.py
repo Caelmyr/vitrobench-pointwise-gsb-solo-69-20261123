@@ -7,11 +7,13 @@ from scipy import ndimage
 from .analysis import capture_provenance, specimen_provenance
 from .art import ACCENT, INK, SHADOW, base_rgba, curve_points, stored_preview
 from .geometry import active_region, polygon_mask, region_domain, signed_area, specimen_frame, validate_polygon
-from .model import InputError, collection, dictionary, enumeration, identity, numeric_pair, string
+from .model import InputError, collection, dictionary, enumeration, identity, numeric_pair, string, timestamp
 
 
 MIN_SEGMENT = 2.0
 MIN_MARK_PIXELS = 20
+FIT_SAMPLES = 240
+MIN_GAP_MM = 0.05
 REGION_OUTLINE = (199, 212, 151)
 EXCLUDED_OUTLINE = (237, 122, 110)
 MASK_THROUGH = (102, 180, 147, 94)
@@ -245,6 +247,104 @@ def polygon_geometry(tile, frame, selection, available):
     )
     painter = geometry_painter(frame, vertices, segments, True, supported, geometry["shape_centroid"])
     return geometry, painter
+
+
+def unsupported_ranges(piece, length):
+    if piece is None:
+        return [[0.0, round(length, 3)]] if length >= MIN_GAP_MM else []
+    ranges = []
+    cursor = 0.0
+    for low, high in piece.get("supported_intervals", []):
+        if (low - cursor) * length >= MIN_GAP_MM:
+            ranges.append([round(cursor * length, 3), round(low * length, 3)])
+        cursor = max(cursor, high)
+    if (1 - cursor) * length >= MIN_GAP_MM:
+        ranges.append([round(cursor * length, 3), round(length, 3)])
+    return ranges
+
+
+def trace_fit_segments(shape, line, interval):
+    start = np.asarray(line["start"], dtype=np.float64)
+    axis = np.asarray(line["end"], dtype=np.float64) - start
+    span = float(axis @ axis)
+    if span <= 0:
+        raise InputError("The came survey line has no extent.")
+    line_length = float(line["length_mm"])
+    low = float(interval["start_mm"])
+    high = float(interval["end_mm"])
+    points = shape["points"]
+    support = {piece["index"]: piece for piece in shape.get("support_along_line", [])}
+    fractions = (np.arange(FIT_SAMPLES) + 0.5) / FIT_SAMPLES
+    segments = []
+    for segment in shape["segments"]:
+        index = segment["index"]
+        origin = np.asarray(points[index - 1], dtype=np.float64)
+        finish = np.asarray(points[index], dtype=np.float64)
+        s0 = float((origin - start) @ axis) / span * line_length
+        s1 = float((finish - start) @ axis) / span * line_length
+        length = float(segment["length"])
+        positions = s0 + (s1 - s0) * fractions
+        fit_mm = round(float(np.mean((positions >= low) & (positions <= high))) * length, 3)
+        crossings = []
+        for boundary, name in ((low, "interval start"), (high, "interval end")):
+            before, after = s0 - boundary, s1 - boundary
+            if before * after < 0:
+                share = abs(before) / (abs(before) + abs(after))
+                crossings.append({"at_mm": round(length * share, 3), "boundary": name})
+        piece = support.get(index)
+        unphotographed = length if piece is None else round(length * (1 - piece["support_percent"] / 100), 3)
+        segments.append({
+            "index": index,
+            "length_mm": segment["length"],
+            "fit_mm": fit_mm,
+            "edge_crossings": crossings,
+            "unphotographed_mm": round(unphotographed, 3),
+            "unphotographed_ranges_mm": unsupported_ranges(piece, length),
+            "projection_mm": [round(min(s0, s1), 3), round(max(s0, s1), 3)],
+        })
+    return segments
+
+
+def attach_fit(store, entry_id, payload):
+    data = dictionary(payload, "Trial fit attachment")
+    result_id = identity(data.get("result_id"), "Measurement ID")
+    record = store.metrology(entry_id)
+    if record["mode"] != "trace":
+        raise InputError("A came trial fit can only accompany a traced path.")
+    result = store.result(result_id)
+    if result["tile_id"] != record["tile_id"] or result["kind"] != "came":
+        raise InputError("Choose a came width survey from this specimen.")
+    fit = result["metrics"].get("trial_fit") or {}
+    adopted = fit.get("adopted")
+    if not adopted:
+        raise InputError("This came survey has no adopted trial-fit interval.")
+    shape = record["shape"]
+    if shape.get("length_unit") != "mm":
+        raise InputError("This trace was saved without surveyed dimensions; its lengths are in pixels.")
+    interval = adopted["interval"]
+    line = {
+        "start": list(result["parameters"]["options"]["start"]),
+        "end": list(result["parameters"]["options"]["end"]),
+        "length_mm": fit["line_length_mm"],
+    }
+    segments = trace_fit_segments(shape, line, interval)
+    block = {
+        "result_id": result_id,
+        "attached_at": timestamp(),
+        "stock_mm": adopted["stock_mm"],
+        "required_mm": adopted["required_mm"],
+        "margin_mm": fit["margin_mm"],
+        "interval": interval,
+        "line": line,
+        "rationale": fit["decision"],
+        "segments": segments,
+        "fit_mm": round(sum(item["fit_mm"] for item in segments), 3),
+        "unphotographed_mm": round(sum(item["unphotographed_mm"] for item in segments), 3),
+        "note": "In-interval and edge positions are measured along the traced path against the adopted came "
+                "interval; unphotographed ranges come from the saved trace support. The trace and the adopted "
+                "stock width and interval stay as saved.",
+    }
+    return store.attach_metrology_fit(entry_id, result_id, block)
 
 
 def create_metrology(store, specimen_id, payload):

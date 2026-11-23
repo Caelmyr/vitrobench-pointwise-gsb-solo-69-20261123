@@ -460,11 +460,27 @@ class Store:
             event(conn, record["tile_id"], "geometry", f"Measured area in the tile plane: {record['title']}")
         return record
 
-    def metrology(self, identifier):
+    def _metrology(self, conn, identifier):
         chosen = identity(identifier, "Geometry measurement ID")
+        row = conn.execute("SELECT document FROM metrology WHERE id=?", (chosen,)).fetchone()
+        return artifact_row(row, "Geometry measurement")
+
+    def metrology(self, identifier):
         with self.connect() as conn:
-            row = conn.execute("SELECT document FROM metrology WHERE id=?", (chosen,)).fetchone()
-            return artifact_row(row, "Geometry measurement")
+            return self._metrology(conn, identifier)
+
+    def attach_metrology_fit(self, identifier, result_id, fit):
+        with self.transaction(write=True) as conn:
+            record = self._metrology(conn, identifier)
+            existing = record.get("fit")
+            if existing is not None:
+                if existing.get("result_id") == result_id:
+                    return record, False
+                raise ConflictError("This trace already carries an adopted trial fit; the original is preserved.")
+            record["fit"] = fit
+            conn.execute("UPDATE metrology SET document=? WHERE id=?", (document(record), record["id"]))
+            event(conn, record["tile_id"], "geometry", f"Adopted came trial fit on trace: {record['title']}")
+            return record, True
 
     def list_metrology(self, tile_id):
         chosen = identity(tile_id, "Specimen ID")
