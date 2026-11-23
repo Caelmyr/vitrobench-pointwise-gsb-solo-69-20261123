@@ -48,14 +48,17 @@ from .store import Store
 from .study import create_study, public_metrics
 from .workspace import (
     calibrate,
+    clear_alignment,
     clear_calibration,
     edit_photo,
     edit_specimen,
     import_photo,
     present_tile,
+    preview_alignment,
     preview_transform,
     remove_photo,
     remove_region,
+    save_alignment,
     save_plane,
     save_region,
     save_registration,
@@ -168,6 +171,22 @@ def register_specimens(api, store, heavy):
         with heavy:
             specimen = save_registration(store, specimen_id, photo_id, json_request())
         return jsonify(present_tile(specimen))
+
+    @api.post("/specimens/<specimen_id>/alignment/preview")
+    def alignment_preview(specimen_id):
+        with heavy:
+            report = preview_alignment(store, specimen_id, json_request())
+        return jsonify(report)
+
+    @api.put("/specimens/<specimen_id>/alignment")
+    def alignment_save(specimen_id):
+        with heavy:
+            specimen = save_alignment(store, specimen_id, json_request())
+        return jsonify(present_tile(specimen))
+
+    @api.delete("/specimens/<specimen_id>/alignment")
+    def alignment_clear(specimen_id):
+        return jsonify(present_tile(clear_alignment(store, specimen_id, json_request())))
 
     @api.post("/specimens/<specimen_id>/geometry/<photo_id>/preview")
     def geometry_test(specimen_id, photo_id):

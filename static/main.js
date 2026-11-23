@@ -492,25 +492,134 @@ function refForm() {
     });
 }
 
+function photoLabel(id) {
+  const found=state.tile?.photos.find(item=>item.id===id);
+  return found?`${found.role_label} · ${found.name}`:"capture";
+}
+
 function pairForm() {
   const ready=state.tile.photos.filter(item=>item.registered_url);
   if (ready.length<2) throw Error("Register at least two captures first.");
+  const al=state.tile.pair_alignment;
+  const alNote=al?`<p class="notice">Saved pair alignment: ${e(photoLabel(al.first_photo_id))} holds the reference frame; ${e(photoLabel(al.second_photo_id))} is re-placed by a ${al.mode==="split"?"two-sided":"single"} transform · limit ${n(al.tolerance_px,1)} px · worst pair ${n(al.residuals.max_px,2)} px${al.seam?` · empty middle band ±${n(al.seam.half_width_px,1)} px`:" · no seam"}</p>`:"";
   modal("Compare registered views",`
     <div class="form-columns">${selectField("First capture","first",sources(ready,ready[0].id))}${selectField("Second capture","second",sources(ready,ready[1].id))}
     ${selectField("View","mode",[["checker","Checkerboard"],["split","Split view"],["edges","Edge disagreement"],["support","Common support"]].map(([value,label])=>option(value,label,"checker")).join(""))}
     ${numField("Divider fraction","divider",0.5,0.05,0.95,0.01)}</div>
+    ${al?checkField("Use the saved pair alignment for this comparison","aligned",true):""}
+    ${alNote}
+    <div class="actions">${btn(al?"Edit pair alignment":"Mark pair alignment","align-edit","tiny secondary","compare")}${al?btn("Remove alignment","align-remove","tiny danger"):""}</div>
     <div id="pair-preview"></div>`,"Compare views",async data=>{
       const token=dialogToken;
-      const res=await request(tileUrl()+"/viewer/pair",{method:"POST",body:parseDatesAndNumbers(data,["divider"])});
+      const body=parseDatesAndNumbers(data,["divider"]);
+      body.aligned=data.has("aligned");
+      const res=await request(tileUrl()+"/viewer/pair",{method:"POST",body});
       const uri=URL.createObjectURL(await res.blob());
       if (token!==dialogToken) {URL.revokeObjectURL(uri);return;}
       const support=JSON.parse(res.headers.get("X-VitroBench-Pair"));
       const parent=q("#pair-preview");
       if (parent.dataset.blob) URL.revokeObjectURL(parent.dataset.blob);
       parent.dataset.blob=uri;
+      const used=support.alignment;
       parent.innerHTML=`<figure class="stage">${img(uri,"Registered pair comparison")}</figure>
-        <div class="metrics">${stat("Shared pixels",n(support.support_overlap_px,0))}${stat("Edges compared",n(support.edge_positions_compared,0))}</div>`;
+        <div class="metrics">${stat("Shared pixels",n(support.support_overlap_px,0))}${stat("Edges compared",n(support.edge_positions_compared,0))}
+        ${used?stat("Alignment",used.mode==="split"?"Two-sided":"Single"):""}${used?.seam?stat("Empty middle band","±"+n(used.seam.half_width_px,1)+" px"):""}</div>`;
     },true);
+}
+
+let align=null;
+
+function alignStage(photo,key,label) {
+  return `<figure class="stage"><div class="capture-drawing" data-align-stage="${key}">${img(photo.registered_url,label)}
+    <svg viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true" id="align-svg-${key}"></svg></div>
+    <figcaption class="stage-foot">${e(label)}</figcaption></figure>`;
+}
+
+function drawAlign() {
+  const svgFirst=q("#align-svg-first"),svgSecond=q("#align-svg-second");
+  if (!svgFirst||!svgSecond||!align) return;
+  const marks=pts=>pts.map(([x,y],index)=>`<circle class="draw-point" cx="${x*1000}" cy="${y*1000}" r="10"/><text class="draw-label" x="${x*1000+16}" y="${y*1000+16}">${index+1}</text>`).join("");
+  const divider=align.pts.divider;
+  svgFirst.innerHTML=(divider.length?`<polyline class="draw-line" points="${divider.map(p=>p.map(c=>c*1000).join(",")).join(" ")}"></polyline>`:"")+marks(align.pts.first);
+  svgSecond.innerHTML=marks(align.pts.second);
+  const counter=q("#align-count");
+  if (counter) counter.textContent=`${align.pts.first.length} + ${align.pts.second.length} paired points · divider ${align.pts.divider.length}/2 · ${align.target==="divider"?"marking the divider on the first view":"marking points"}`;
+}
+
+function refreshAlignStages() {
+  const box=q("#align-stage-box",dialog);
+  if (!box||!align) return;
+  const first=state.tile.photos.find(item=>item.id===align.firstId);
+  const second=state.tile.photos.find(item=>item.id===align.secondId);
+  box.innerHTML=`<div class="stage-pair">${alignStage(first,"first","First view · reference frame")}${alignStage(second,"second","Second view · aligned to the first")}</div>`;
+  drawAlign();
+}
+
+function resetAlignMarks() {
+  align.pts={first:[],second:[],divider:[]};
+  align.history=[];
+  invalidateAlignReport();
+  refreshAlignStages();
+}
+
+function invalidateAlignReport() {
+  if (!align) return;
+  align.report=null;
+  const report=q("#align-report",dialog);
+  if (report) report.innerHTML="";
+}
+
+function alignReportHtml() {
+  const card=(key,title,scheme)=>{
+    if (!scheme.feasible) return `<section class="card align-card"><h4>${e(title)}</h4><p class="soft">Cannot be used: ${e(scheme.reason)}</p></section>`;
+    const seam=scheme.seam
+      ?`<li>Empty middle band ±${n(scheme.seam.half_width_px,1)} px${scheme.seam.half_width_mm!=null?` (±${n(scheme.seam.half_width_mm,2)} mm)`:""} · ${n(scheme.seam.unmapped_percent,1)}% of the view</li>`
+      :"<li>No seam — every position keeps a correspondence</li>";
+    const sides=scheme.sides?`<li>Side fits: left ${n(scheme.sides.left.rms_px,2)} px · right ${n(scheme.sides.right.rms_px,2)} px RMS</li>`:"";
+    return `<label class="card align-card"><input type="radio" name="align_mode" value="${key}"${scheme.meets_tolerance?"":" disabled"}>
+      <div class="title-row"><h4>${e(title)}</h4>${badge(scheme.meets_tolerance?"within limit":"over limit",scheme.meets_tolerance?"ready":"caution")}</div>
+      <ul><li>Marked points fit to ${n(scheme.residuals.rms_px,2)} px RMS · worst pair ${n(scheme.residuals.max_px,2)} px</li>
+      ${sides}<li>Outer frame moves up to ${n(scheme.corner_shift_px.max,2)} px from the corner registration</li>${seam}</ul>
+      <p class="soft">${e(scheme.note)}</p></label>`;
+  };
+  return `<h3>Keep one alignment</h3><p class="soft">Both schemes are checked against your pairing error limit. Only the selected one is saved; the unconfirmed middle band of the two-sided scheme stays empty.</p>
+    <div class="align-report">${card("single","Whole view · one transform",align.report.schemes.single)}${card("split","Two sides · split at the divider",align.report.schemes.split)}</div>`;
+}
+
+function alignmentForm() {
+  const ready=state.tile.photos.filter(item=>item.registered_url);
+  if (ready.length<2) throw Error("Register at least two captures first.");
+  const old=state.tile.pair_alignment;
+  const oldOk=old&&ready.some(item=>item.id===old.first_photo_id)&&ready.some(item=>item.id===old.second_photo_id);
+  align={
+    firstId:oldOk?old.first_photo_id:ready[0].id,
+    secondId:oldOk?old.second_photo_id:ready.find(item=>item.id!==ready[0].id).id,
+    pts:oldOk?{first:old.pairs.map(p=>[...p.first]),second:old.pairs.map(p=>[...p.second]),divider:old.divider?old.divider.map(p=>[...p]):[]}:{first:[],second:[],divider:[]},
+    history:[],target:"points",report:null,pairs:null,tolerance:oldOk?old.tolerance_px:2,
+  };
+  modal(old?"Replace pair alignment":"Mark pair alignment",`
+    <p class="notice">Mark features you can see clearly in <strong>both</strong> views, in the same order (at least four pairs). The two-sided scheme also needs the middle divider: two points on the first view. Only one scheme is kept, and positions neither side can confirm stay empty.</p>
+    <div class="form-columns">${selectField("First capture · reference","align-first",sources(ready,align.firstId))}${selectField("Second capture · aligned","align-second",sources(ready,align.secondId))}
+    ${numField("Pairing error limit (plane px)","align-tolerance",align.tolerance,0.2,60,0.1)}</div>
+    <div id="align-stage-box"></div>
+    <div class="actions">${btn("Mark points","align-mode","tiny secondary",null,'data-value="points"')}${btn("Mark divider","align-mode","tiny secondary",null,'data-value="divider"')}
+      ${btn("Undo point","align-undo","tiny ghost")}${btn("Clear marks","align-clear","tiny ghost")}<span class="soft" id="align-count"></span></div>
+    <div class="actions">${btn("Evaluate both schemes","align-evaluate","secondary","compare")}</div>
+    <div id="align-report"></div>`,"Save the selected alignment",async data=>{
+      if (!align?.report) throw Error("Evaluate both schemes first.");
+      const mode=data.get("align_mode");
+      if (!mode) throw Error("Choose which scheme to keep.");
+      const scheme=align.report.schemes[mode];
+      if (!scheme?.feasible) throw Error("That scheme cannot be used: "+(scheme?.reason||"it was not evaluated."));
+      if (!scheme.meets_tolerance) throw Error("That scheme exceeds your pairing error limit.");
+      await patchTile("/alignment","PUT",{
+        first:align.firstId,second:align.secondId,mode,pairs:align.pairs,
+        divider:align.pts.divider.length===2?align.pts.divider:null,tolerance_px:align.tolerance,
+      },"Pair alignment saved.");
+    },true);
+  q("#field-align-first",dialog).addEventListener("change",event=>{align.firstId=event.target.value;resetAlignMarks();});
+  q("#field-align-second",dialog).addEventListener("change",event=>{align.secondId=event.target.value;resetAlignMarks();});
+  refreshAlignStages();
 }
 
 function geometryMeasurementForm(mode) {
@@ -689,6 +798,26 @@ async function doAction(name,target) {
       preview.innerHTML=`<figure class="stage">${img(uri,"Proposed rectified photo")}</figure><p class="soft">Visible support ${e(result.headers.get("X-Specimen-Support"))}%</p>`;
     },
     compare:pairForm,
+    "align-edit":()=>alignmentForm(),
+    "align-remove":()=>modal("Remove the saved pair alignment?",'<p>View comparisons and line scans fall back to the corner registrations. Saved measurements keep their snapshot.</p>',"Remove alignment",async ()=>{
+      await patchTile("/alignment","DELETE",{},"Pair alignment removed.");
+    }),
+    "align-mode":()=>{if(align){align.target=value;drawAlign();}},
+    "align-undo":()=>{if(!align)return;const last=align.history.pop();if(last){align.pts[last].pop();invalidateAlignReport();drawAlign();}},
+    "align-clear":()=>{if(align)resetAlignMarks();},
+    "align-evaluate":async ()=>{
+      if (!align) return;
+      if (align.firstId===align.secondId) throw Error("Choose two different captures.");
+      const {first,second,divider}=align.pts;
+      if (first.length<4||first.length!==second.length) throw Error("Mark at least four matching features in both views, in the same order.");
+      align.pairs=first.map((point,index)=>({first:point,second:second[index]}));
+      align.tolerance=Number(q("#field-align-tolerance",dialog).value);
+      align.report=await api(tileUrl()+"/alignment/preview",{method:"POST",body:{
+        first:align.firstId,second:align.secondId,pairs:align.pairs,
+        divider:divider.length===2?divider:null,tolerance_px:align.tolerance,
+      }});
+      q("#align-report",dialog).innerHTML=alignReportHtml();
+    },
     quality:qualityForm,
     "region-add":()=>regionForm(),
     "region-edit":()=>regionForm(state.tile.regions.find(item=>item.id===id)),
@@ -777,6 +906,21 @@ document.addEventListener("click",event=>{
     const v=Math.min(1,Math.max(0,(event.clientY-rect.top)/rect.height));
     drawPoints.push([Number(u.toFixed(6)),Number(v.toFixed(6))]);
     drawUpdate();
+    return;
+  }
+  const alignStage=event.target.closest("[data-align-stage]");
+  if (alignStage && align && dialog.open) {
+    const rect=alignStage.getBoundingClientRect();
+    const u=Number(Math.min(1,Math.max(0,(event.clientX-rect.left)/rect.width)).toFixed(6));
+    const v=Number(Math.min(1,Math.max(0,(event.clientY-rect.top)/rect.height)).toFixed(6));
+    const key=alignStage.dataset.alignStage;
+    if (align.target==="divider") {
+      if (key==="first" && align.pts.divider.length<2) {align.pts.divider.push([u,v]);align.history.push("divider");}
+    } else if (align.pts[key].length<40) {
+      align.pts[key].push([u,v]);align.history.push(key);
+    }
+    invalidateAlignReport();
+    drawAlign();
   }
 });
 

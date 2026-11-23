@@ -1,5 +1,6 @@
 import numpy as np
 
+from .alignment import alignment_summary, paired_view
 from .art import (
     annotated_regions,
     base_rgba,
@@ -29,7 +30,7 @@ from .geometry import active_region, analysis_mask, region_domain, specimen_fram
 from .lighting import measure_direction, measure_glare
 from .model import ANALYSIS_LABELS, InputError, library_fields
 from .parameters import TOOLS, analysis_parameters
-from .profile import measure_profile
+from .profile import measure_profile, measure_profile_paired
 from .pores import measure_pores
 from .dots import measure_dots
 from .scribe import measure_scribe
@@ -239,6 +240,17 @@ def compute_single(store, tile, frame, region, area, linear, correction, params,
         return metrics, image, None
     if kind == "profile":
         metrics = measure_profile(frame, linear, area, options)
+        paired = paired_view(store, tile, params["photo_id"])
+        if paired is not None:
+            paired_frame, mapper, alignment = paired
+            paired_linear, _ = corrected_linear(tile, paired_frame, params["apply_neutral"])
+            metrics["paired"] = measure_profile_paired(
+                paired_frame, paired_linear, area, options, metrics["line_length"], metrics["distance_unit"], mapper
+            )
+            metrics["paired"]["photo_id"] = paired_frame.photo["id"]
+            metrics["paired"]["photo_name"] = paired_frame.photo["name"]
+            metrics["paired"]["role"] = paired_frame.photo["role"]
+            metrics["paired"]["alignment"] = alignment_summary(alignment)
         image = profile_overlay(frame, metrics["endpoints"], options["band_pixels"], linear)
         return metrics, image, None
     if kind == "reference":

@@ -24,7 +24,8 @@ export function metricSet(record) {
     texture: () => [["Medium local roughness",n(m.grid_roughness["50"],5)],["Ridge axis",m.texture_orientation ? n(m.texture_orientation.ridge_angle_clockwise)+"°" : "—"],["Coherence",n(m.texture_orientation?.coherence,3)]],
     craze: () => [["Trace length",`${n(m.network_length)} ${m.length_unit}`],["Junctions",n(m.junctions,0)],["Closed cells",n(m.closed_cell_count,0)]],
     rim: () => [["Rim median ΔE",n(m.all_edges.median_from_center_delta_e)],["Rim pixels",n(m.all_edges.pixels,0)],["Interior L*",n(m.interior.median_lab[0])]],
-    profile: () => [["Distance",`${n(m.line_length)} ${m.distance_unit}`],["Valid stations",`${m.supported_stations}/${m.requested_stations}`],["Median L*",n(m.features.median_lightness)]],
+    profile: () => [["Distance",`${n(m.line_length)} ${m.distance_unit}`],["Valid stations",`${m.supported_stations}/${m.requested_stations}`],["Median L*",n(m.features.median_lightness)],
+      ...(m.paired?[["Paired stations",`${m.paired.compared_stations}/${m.paired.rows.length}`]]:[])],
     reference: () => [["Specimen to reference ΔE",n(m.delta_e76)],["Lightness difference",n(m.delta_lab[0])],["Dispersion difference",n(m.dispersion_delta)]],
     marking: () => [["Measured stations",percent(m.observed_percent)],["Rule among measured",percent(m.midrib_percent_of_observed)],["Runs",m.runs.length]],
     joint: () => [["Measured stations",m.measured_stations],["Unmeasured stations",m.unmeasured_stations],["Median absolute contrast",n(m.median_absolute_step,4)]],
@@ -108,8 +109,23 @@ function textureDetail(m) {
 }
 
 function profileDetail(m) {
-  return `<h3>Lightness along the marked line</h3>${plot([{values:m.rows.map(item=>item.lightness)}], "Lightness along the station band",{axis:`0–${n(m.line_length)} ${m.distance_unit}`})}
-    <details><summary>Sample station values</summary>${table(["Distance","Valid samples","L*","a*","b*"],m.rows.map(item=>[`${n(item.position,3)} ${item.position_unit}`,item.samples,n(item.lightness),n(item.a),n(item.b)]))}</details>`;
+  const series=[{values:m.rows.map(item=>item.lightness),color:"#377360"}];
+  let legend="",note="",head=["Distance","Valid samples","L*","a*","b*"];
+  if (m.paired) {
+    series.push({values:m.paired.rows.map(item=>item.lightness),color:"#b26a4a"});
+    legend=`<div class="swatches">${dots("Measured capture",series[0].color)} ${dots(`Paired · ${m.paired.photo_name}`,series[1].color)}</div>`;
+    const gaps=m.paired.missing_intervals.map(([a,b])=>`${n(a,1)}–${n(b,1)} ${m.paired.distance_unit}`).join(", ");
+    note=`<p class="plot-note">The paired capture is sampled through the saved ${m.paired.alignment.mode==="split"?"two-sided":"single"} pair alignment. `+
+      (gaps?`No confirmed comparison at ${e(gaps)}.`:"Every station has a confirmed comparison.")+" The measured line length is unchanged.</p>";
+    head=[...head,"Paired L*"];
+  }
+  const rows=m.rows.map((item,index)=>{
+    const row=[`${n(item.position,3)} ${item.position_unit}`,item.samples,n(item.lightness),n(item.a),n(item.b)];
+    if (m.paired) row.push(n(m.paired.rows[index]?.lightness));
+    return row;
+  });
+  return `<h3>Lightness along the marked line</h3>${legend}${plot(series,"Lightness along the station band",{axis:`0–${n(m.line_length)} ${m.distance_unit}`})}${note}
+    <details><summary>Sample station values</summary>${table(head,rows)}</details>`;
 }
 
 function glareDetail(m) {

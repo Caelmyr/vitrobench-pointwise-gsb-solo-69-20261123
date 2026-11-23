@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 
 from .color import float_list, linear_lab
@@ -88,4 +90,58 @@ def measure_profile(frame, linear, domain, options):
         "requested_stations": len(counts),
         "rows": row_values(lab, intensity, length, unit, counts, endpoints),
         "features": profile_features(lab, valid, length),
+    }
+
+
+def mapped_line_grid(extent, endpoints, count, band_width, mapper):
+    """Station grid of a paired frame whose positions follow the saved alignment."""
+    width, height = extent
+    origin = np.array(endpoints[0]) * [width, height] - 0.5
+    finish = np.array(endpoints[1]) * [width, height] - 0.5
+    delta = finish - origin
+    length = float(np.linalg.norm(delta))
+    perpendicular = np.array([-delta[1], delta[0]]) / max(length, 1e-9)
+    centers = origin[None, :] + np.linspace(0, 1, count)[:, None] * delta[None, :]
+    unit = (centers + 0.5) / [width, height]
+    mapped, center_ok = mapper(unit)
+    mapped_px = np.asarray(mapped) * [width, height] - 0.5
+    steps = max(int(math.ceil(band_width)), 1)
+    transverse = np.linspace(-band_width / 2, band_width / 2, steps) if steps > 1 else np.array([0.0])
+    grid = mapped_px[:, None, :] + transverse[None, :, None] * perpendicular[None, None, :]
+    return (grid[..., 1], grid[..., 0]), center_ok
+
+
+def measure_profile_paired(frame, linear, domain, options, length, unit, mapper=None):
+    endpoints = [options["start"], options["end"]]
+    if mapper is None:
+        coords, _ = line_grid(frame.extent, *endpoints, options["samples"], options["band_pixels"])
+        center_ok = None
+    else:
+        coords, center_ok = mapped_line_grid(frame.extent, endpoints, options["samples"], options["band_pixels"], mapper)
+    supported = frame.valid & ~frame.clipped & domain
+    lab, counts = measure_line_samples(linear_lab(linear), supported, coords)
+    intensity, _ = measure_line_samples(luminance(linear), supported, coords)
+    if center_ok is not None:
+        counts = np.where(center_ok, counts, 0)
+    valid = counts > 0
+    size = len(counts)
+    axis = np.linspace(0, length, size)
+    rows = []
+    for index in range(size):
+        rows.append({
+            "position": round(float(axis[index]), 5),
+            "samples": int(counts[index]),
+            "lightness": round(float(lab[index, 0]), 4) if counts[index] else None,
+            "intensity": round(float(intensity[index, 0]), 5) if counts[index] else None,
+        })
+    missing = []
+    for start, stop in positive_runs(~valid):
+        missing.append([round(float(axis[start]), 4), round(float(axis[stop - 1]), 4)])
+    return {
+        "rows": rows,
+        "compared_stations": int(np.count_nonzero(valid)),
+        "missing_stations": int(size - np.count_nonzero(valid)),
+        "missing_intervals": missing,
+        "distance_unit": unit,
+        "note": "Paired values come through the saved pair alignment at the same stations; the measured line length is unchanged.",
     }

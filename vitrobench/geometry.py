@@ -145,10 +145,9 @@ def map_coordinates(matrix, target_x, target_y, source_width, source_height):
     return mapped_x * source_width - 0.5, mapped_y * source_height - 0.5
 
 
-def warp_capture(rgb, alpha, destination, transform):
+def warp_capture_blocks(rgb, alpha, destination, coordinate_fn):
     source_height, source_width = alpha.shape
     width, height = destination
-    target_x = (np.arange(width, dtype=np.float32)[None, :] + 0.5) / width
     rgb_working = srgb_to_linear(rgb)
     weighted = rgb_working * alpha[:, :, None]
     src_clip = (np.max(rgb, axis=2) >= 253 / 255) | (np.max(rgb, axis=2) <= 5 / 255)
@@ -157,9 +156,10 @@ def warp_capture(rgb, alpha, destination, transform):
     clipped = np.zeros((height, width), dtype=bool)
     for start in range(0, height, WARP_ROW_BLOCK):
         stop = min(start + WARP_ROW_BLOCK, height)
-        target_y = (np.arange(start, stop, dtype=np.float32)[:, None] + 0.5) / height
-        src_x, src_y = map_coordinates(transform, target_x, target_y, source_width, source_height)
+        src_x, src_y, allowed = coordinate_fn(start, stop, destination, (source_width, source_height))
         within = (src_x >= -0.5) & (src_x <= source_width - 0.5) & (src_y >= -0.5) & (src_y <= source_height - 0.5)
+        if allowed is not None:
+            within &= allowed
         coordinates = (src_y, src_x)
         opacity = ndimage.map_coordinates(alpha, coordinates, order=1, mode="nearest")
         present = within & (opacity >= MIN_SUPPORT_ALPHA)
@@ -172,6 +172,17 @@ def warp_capture(rgb, alpha, destination, transform):
             samples = ndimage.map_coordinates(weighted[:, :, channel], coordinates, order=1, mode="nearest")
             np.divide(samples, opacity, where=present, out=target[:, :, channel])
     return linear, coverage, clipped
+
+
+def warp_capture(rgb, alpha, destination, transform):
+    def coordinates(start, stop, extent, source_extent):
+        width, height = extent
+        target_x = (np.arange(width, dtype=np.float32)[None, :] + 0.5) / width
+        target_y = (np.arange(start, stop, dtype=np.float32)[:, None] + 0.5) / height
+        src_x, src_y = map_coordinates(transform, target_x, target_y, *source_extent)
+        return src_x, src_y, None
+
+    return warp_capture_blocks(rgb, alpha, destination, coordinates)
 
 
 def specimen_frame(blobs, tile, photo_id=None):

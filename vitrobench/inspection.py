@@ -2,11 +2,12 @@ import numpy as np
 from PIL import ImageDraw
 from scipy import ndimage
 
+from .alignment import aligned_second_frame, alignment_summary
 from .art import annotated_regions, base_rgba, magnitude_overlay
 from .color import corrected_linear, float_list, linear_lab, quantile_rows
 from .defects import gaussian_supported
 from .geometry import active_region, analysis_mask, region_domain, specimen_frame
-from .model import InputError, enumeration, identity, integer, scalar
+from .model import InputError, enumeration, flag, identity, integer, scalar
 from .photos import luminance, uint8_image
 
 
@@ -60,11 +61,26 @@ def viewing_pair(store, tile, payload):
     if first_id == second_id:
         raise InputError("Select two different registered captures.")
     branch = enumeration(payload.get("mode", "checker"), ("checker", "split", "edges", "support"), "Viewing mode")
-    first = specimen_frame(store.blobs, tile, first_id)
-    second = specimen_frame(store.blobs, tile, second_id)
+    aligned = flag(payload.get("aligned", False), "Use saved pair alignment")
+    alignment = None
+    if aligned:
+        alignment = tile.get("pair_alignment")
+        if alignment is None:
+            raise InputError("This specimen has no saved pair alignment.")
+        if {first_id, second_id} != {alignment["first_photo_id"], alignment["second_photo_id"]}:
+            raise InputError("The saved pair alignment covers a different capture pair.")
+        frames = {
+            alignment["first_photo_id"]: specimen_frame(store.blobs, tile, alignment["first_photo_id"]),
+            alignment["second_photo_id"]: aligned_second_frame(store.blobs, tile, alignment),
+        }
+        first, second = frames[first_id], frames[second_id]
+    else:
+        first = specimen_frame(store.blobs, tile, first_id)
+        second = specimen_frame(store.blobs, tile, second_id)
     region = active_region(tile, payload.get("region_id"))
     domain = region_domain(first.extent, tile, region)
     stats, field, confident = side_statistics(first, second, domain)
+    stats["alignment"] = alignment_summary(alignment) if alignment else None
     if branch == "edges":
         picture = magnitude_overlay(first, field, confident, 1.0)
     elif branch == "support":

@@ -195,6 +195,7 @@ class Store:
             "regions": fields.get("regions", []),
             "plane": fields.get("plane"),
             "registrations": fields.get("registrations", {}),
+            "pair_alignment": fields.get("pair_alignment"),
             "calibration": fields.get("calibration"),
             "synthetic": fields.get("synthetic", False),
         }

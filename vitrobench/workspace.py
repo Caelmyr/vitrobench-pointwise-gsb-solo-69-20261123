@@ -1,3 +1,10 @@
+from .alignment import (
+    aligned_second_frame,
+    alignment_request,
+    build_alignment,
+    evaluate_schemes,
+    public_report,
+)
 from .color import robust_neutral
 from .geometry import (
     DEFAULT_CORNERS,
@@ -74,6 +81,7 @@ def present_tile(tile):
     native = tile.get("plane")
     return {
         **tile,
+        "pair_alignment": tile.get("pair_alignment"),
         "photos": photos,
         "canvas_size": native["size"] if native else None,
     }
@@ -148,6 +156,10 @@ def remove_photo(store, tile_id, capture_id, payload):
             tile["calibration"] = None
             tile["registrations"] = {}
             tile["regions"] = []
+            tile["pair_alignment"] = None
+        alignment = tile.get("pair_alignment")
+        if alignment and capture_id in (alignment["first_photo_id"], alignment["second_photo_id"]):
+            tile["pair_alignment"] = None
         tile["registrations"].pop(capture_id, None)
         tile["photos"].remove(photo)
 
@@ -197,6 +209,7 @@ def save_plane(store, tile_id, payload):
         tile["registrations"].clear()
         tile["regions"].clear()
         tile["calibration"] = None
+        tile["pair_alignment"] = None
 
     return store.edit_tile(tile_id, expected, change, "plane", "Saved the photographed tile plane")
 
@@ -221,6 +234,43 @@ def save_registration(store, identifier, photo_id, payload):
         }
 
     return store.edit_tile(identifier, expected, change, "registration", "Registered a cross-light capture")
+
+
+def preview_alignment(store, identifier, payload):
+    first, second, pairs, divider, tolerance = alignment_request(payload)
+    tile = store.tile(identifier)
+    evaluation = evaluate_schemes(tile, first, second, pairs, divider, tolerance)
+    return public_report(evaluation)
+
+
+def save_alignment(store, identifier, payload):
+    expected = model_version(payload)
+    mode = enumeration(payload.get("mode"), ("single", "split"), "Alignment mode")
+    first, second, pairs, divider, tolerance = alignment_request(payload)
+    current = store.tile(identifier)
+    store.require_version(current, expected)
+    record = build_alignment(current, first, second, pairs, divider, tolerance, mode)
+    frame = aligned_second_frame(store.blobs, current, record)
+    supported = float(frame.valid.mean())
+    if supported < 0.15:
+        raise InputError("The kept alignment leaves less than 15% of the view covered. Check the marked points.")
+    record["support_percent"] = round(100 * supported, 2)
+
+    def change(tile):
+        tile["pair_alignment"] = record
+
+    return store.edit_tile(identifier, expected, change, "alignment", "Saved a point-based pair alignment")
+
+
+def clear_alignment(store, identifier, payload):
+    expected = model_version(payload)
+
+    def change(tile):
+        if tile.get("pair_alignment") is None:
+            raise InputError("There is no saved pair alignment to remove.")
+        tile["pair_alignment"] = None
+
+    return store.edit_tile(identifier, expected, change, "alignment", "Removed the saved pair alignment")
 
 
 def save_region(store, identifier, payload, region_id=None):
