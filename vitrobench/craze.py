@@ -216,7 +216,8 @@ def craze_overlay(frame, network, footprint, nodes):
     return Image.fromarray(np.dstack((values, alpha)))
 
 
-def measure_craze(frame, linear, area, options):
+def crack_centerline(frame, linear, area, options):
+    """Return the thinned dark-line trace and its usable support for one capture."""
     source = luminance(linear)
     candidate = area & frame.valid & ~frame.clipped
     if source.size > PIXEL_LIMIT:
@@ -228,6 +229,11 @@ def measure_craze(frame, linear, area, options):
     if np.count_nonzero(support) < 100:
         raise InputError("Choose a larger area with contiguous, unclipped image support.")
     thin, binary, thresholds = threshold_centerline(filtered, fine, coarse, support, options)
+    return thin, support, binary, thresholds
+
+
+def measure_craze(frame, linear, area, options):
+    thin, support, binary, thresholds = crack_centerline(frame, linear, area, options)
     degrees = degree_map(thin)
     length, edges = effective_edge_length(thin, frame.scale)
     nodes, _ = branch_nodes(degrees, thin)

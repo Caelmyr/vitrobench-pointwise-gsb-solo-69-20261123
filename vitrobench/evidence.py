@@ -203,6 +203,7 @@ def create_evidence(store, identifier, payload):
     byte_total = sum(store.blobs.require(item["digest"]).stat().st_size for item in originals)
     if byte_total > SOURCE_TOTAL_BYTES:
         raise InputError("Selected originals exceed the packet limit of 60 MiB. Omit originals or pin fewer measurements.")
+    adopted = store.adopted_route(tile["id"])
     return store.save_evidence({
         "title": title,
         "notes": notes,
@@ -215,8 +216,27 @@ def create_evidence(store, identifier, payload):
         "originals": originals,
         "original_bytes": byte_total,
         "measurements": records,
+        "route": evidence_route(adopted),
         "sheets": evidence_sheets(store, title, records, view),
     })
+
+
+def evidence_route(record):
+    if record is None or record.get("adopted") is None:
+        return None
+    adopted = record["adopted"]
+    return {
+        "id": record["id"],
+        "key": adopted["key"],
+        "adopted_at": adopted.get("adopted_at"),
+        "path": adopted["path"],
+        "tape_width": adopted["tape_width"],
+        "unit": adopted["unit"],
+        "plane_size": adopted["plane"]["size"],
+        "metrics": adopted["metrics"],
+        "source_tile_version": adopted["source_tile_version"],
+        "tradeoff": record.get("tradeoff"),
+    }
 
 
 def inline_picture(blobstore, digest):
@@ -249,6 +269,19 @@ def exported_image_name(record, view):
     return f"measurements/{result_entry_names(record)}-{view}.png"
 
 
+def route_article(route):
+    if not route:
+        return ""
+    metrics = route["metrics"]
+    return (
+        f'<article><h2>Adopted tape route {escape(route["key"])}</h2>'
+        f'<p>Frozen at specimen revision {route["source_tile_version"]} · '
+        f'{escape(str(metrics["path_length"]))} {escape(metrics["length_unit"])} · '
+        f'two-capture {round(metrics["dual_capture_fraction"] * 100, 1)}%</p>'
+        f'<p>{escape(route.get("tradeoff") or "")}</p></article>'
+    )
+
+
 def specimen_html(store, entry, interactive=True):
     title = escape(entry["title"])
     name = escape(entry["tile_name"])
@@ -260,7 +293,7 @@ def specimen_html(store, entry, interactive=True):
         digest = record["pictures"][entry["view"]]
         url = inline_picture(store.blobs, digest) if interactive else exported_image_name(record, entry["view"])
         measurements.append(measurement_article(record, url))
-    body = "".join(measurements)
+    body = route_article(entry.get("route")) + "".join(measurements)
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
@@ -343,4 +376,8 @@ def summarize_result(record):
 
 def summarize_evidence(record):
     keys = ("title", "notes", "id", "tags", "created_at", "tile_id", "tile_name", "tile_version_at_pin", "view")
-    return {**{key: record[key] for key in keys}, "count": len(record["measurements"]), "sheet_count": len(record["sheets"])}
+    summary = {key: record[key] for key in keys}
+    summary["count"] = len(record["measurements"])
+    summary["sheet_count"] = len(record["sheets"])
+    summary["route"] = record.get("route")
+    return summary

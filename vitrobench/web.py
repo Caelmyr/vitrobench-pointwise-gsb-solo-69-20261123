@@ -40,10 +40,18 @@ from .model import (
     string,
     tile_fields,
 )
-from .parameters import TOOLS
+from .parameters import TOOLS, ROUTE_FIELDS
 from .quality import quality_manifest
 from .photos import png_bytes
 from .review import parse_reviews, review_selection, save_reviews
+from .route import (
+    adopt_route,
+    audit_picture,
+    audit_result,
+    current_adopted,
+    plan_route,
+    route_summary,
+)
 from .store import Store
 from .study import create_study, public_metrics
 from .workspace import (
@@ -306,6 +314,64 @@ def register_measurements(api, store, heavy):
         return png_blob(store, store.reference(reference_id)["annotated_digest"])
 
 
+def register_routes(api, store, heavy):
+    @api.post("/specimens/<specimen_id>/routes")
+    def route_plan(specimen_id):
+        with heavy:
+            record = plan_route(store, specimen_id, json_request())
+        return jsonify(record), 201
+
+    @api.get("/specimens/<specimen_id>/routes")
+    def route_list(specimen_id):
+        return jsonify({"items": [route_summary(item) for item in store.routes(specimen_id)]})
+
+    @api.get("/specimens/<specimen_id>/routes/adopted")
+    def route_adopted(specimen_id):
+        return jsonify(current_adopted(store, specimen_id))
+
+    @api.get("/routes/<route_id>")
+    def route_show(route_id):
+        return jsonify(store.route(route_id))
+
+    @api.get("/routes/<route_id>/image/plan")
+    def route_plan_image(route_id):
+        return png_blob(store, store.route(route_id)["picture"])
+
+    @api.get("/routes/<route_id>/image/adopted")
+    def route_adopted_image(route_id):
+        record = store.route(route_id)
+        if record["adopted"] is None:
+            raise MissingError("This tape-route plan has not been adopted.")
+        return png_blob(store, record["adopted"]["picture"])
+
+    @api.post("/routes/<route_id>/adopt")
+    def route_adopt(route_id):
+        with heavy:
+            record = adopt_route(store, route_id, json_request())
+        return jsonify(record)
+
+    @api.get("/routes/<route_id>/audit/<result_id>")
+    def route_audit(route_id, result_id):
+        record = store.route(route_id)
+        if record["adopted"] is None:
+            raise MissingError("Adopt a tape route before testing saved observations against it.")
+        return jsonify(audit_result(store, record, result_id))
+
+    @api.get("/routes/<route_id>/audit/<result_id>/<observation_key>")
+    def route_audit_one(route_id, result_id, observation_key):
+        record = store.route(route_id)
+        if record["adopted"] is None:
+            raise MissingError("Adopt a tape route before testing saved observations against it.")
+        return jsonify(audit_result(store, record, result_id, only_key=observation_key))
+
+    @api.get("/routes/<route_id>/audit/<result_id>/<observation_key>.png")
+    def route_audit_image(route_id, result_id, observation_key):
+        record = store.route(route_id)
+        if record["adopted"] is None:
+            raise MissingError("Adopt a tape route before testing saved observations against it.")
+        return image_response(audit_picture(store, record, result_id, observation_key))
+
+
 def register_artifacts(api, store, heavy):
     @api.get("/specimens/<specimen_id>/evidence")
     def packets(specimen_id):
@@ -470,6 +536,7 @@ def create_app(data_dir=None):
             "region_purposes": REGION_PURPOSES,
             "analysis_labels": ANALYSIS_LABELS,
             "tools": TOOLS,
+            "route_fields": ROUTE_FIELDS,
             "study_metrics": public_metrics(),
         })
 
@@ -505,6 +572,7 @@ def create_app(data_dir=None):
     register_training(api, store, heavy)
     register_specimens(api, store, heavy)
     register_measurements(api, store, heavy)
+    register_routes(api, store, heavy)
     register_artifacts(api, store, heavy)
     register_desks(api, store, heavy)
     app.register_blueprint(api)

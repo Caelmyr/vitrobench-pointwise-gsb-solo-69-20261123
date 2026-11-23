@@ -1,7 +1,7 @@
 import {q,qa,icon,e,btn,link,badge,empty,option,img,field,textField,selectField,numField,checkField,areaField,api,request,date,n,percent,plot,stat,table} from "./widgets.js";
 import {resultCard,specimenResultRows} from "./results.js";
 
-const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:""};
+const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:"",routes:[],route:null,routeLayer:"plan",audit:null,auditKey:null,resultAudit:null,adoptedRoute:null};
 const dialog=q("#dialog");
 const nav=[
   ["collection","Specimens","tiles"],
@@ -10,7 +10,7 @@ const nav=[
   ["received","Received evidence","archive"],
 ];
 const tabs=[
-  ["captures","Captures","camera"],["regions","Sampling regions","frame"],["measure","Measure","measure"],["geometry","Geometry","frame"],["evidence","Evidence","archive"],
+  ["captures","Captures","camera"],["regions","Sampling regions","frame"],["measure","Measure","measure"],["route","Tape route","measure"],["geometry","Geometry","frame"],["evidence","Evidence","archive"],
 ];
 const tileUrl=()=>`/api/specimens/${state.tile.id}`;
 const tileData=extra=>({version:state.tile.version,...extra});
@@ -155,8 +155,30 @@ function measureControls() {
 }
 
 function measurements() {
-  return `<div class="grid-detail"><div>${state.result?resultCard(state.result,state.layer,state.tile.version):empty("Run a measurement to view its map and results.")}</div>
+  const record=state.result;
+  const coverage=record&&record.kind==="defects"?defectsCoverage(record):"";
+  return `<div class="grid-detail"><div>${record?resultCard(record,state.layer,state.tile.version):empty("Run a measurement to view its map and results.")}${coverage}</div>
     <div class="stack"><section class="card"><h3>Measure specimen</h3>${measureControls()}</section><section class="card"><h3>Saved measurements</h3>${specimenResultRows(state.results)}</section></div></div>`;
+}
+
+function defectsCoverage(record) {
+  const adopted=state.routes.find(item=>item.status==="adopted"&&item.adopted_key);
+  if (!adopted) return "";
+  const audit=state.resultAudit;
+  if (!audit||audit.result_id!==record.id) {
+    return `<section class="card stack"><h3>Coverage by the adopted strip</h3>
+      <p class="soft">Test each saved spot's own stored outline against the frozen tape route adopted for this specimen.</p>
+      <div class="actions">${btn("Test saved spots","defect-audit","secondary","measure")}${btn("Open tape route","tile-tab","secondary","measure",'data-value="route"')}</div></section>`;
+  }
+  const rows=audit.items.map(item=>{
+    const style=item.state==="covered"?"ready":item.state==="uncovered"?"caution":"";
+    return `<div class="row"><div class="grow"><strong class="row-title">${e(item.key)} ${badge(item.state,style)}</strong>
+      <small>covered ${item.covered_fraction==null?"—":percent(item.covered_fraction*100)} · uncovered ${item.uncovered_area_px==null?"—":n(item.uncovered_area_px,1)} px${item.uncovered_parts.length?` · ${item.uncovered_parts.length} part(s)`:""}</small></div>
+      ${btn("Inspect","defect-audit-open","tiny secondary",null,`data-marker="${e(item.key)}"`)}</div>`;
+  }).join("");
+  return `<section class="card stack"><div class="title-row"><h3>Coverage by the adopted strip</h3>${badge("Route "+audit.route_key,"ready")}</div>
+    <div class="metrics">${stat("Spots tested",audit.summary.observed)}${stat("Fully covered",audit.summary.covered)}${stat("Partly covered",audit.summary.partial)}${stat("Uncovered",audit.summary.uncovered)}${stat("No outline",audit.summary.without_outline)}</div>
+    <p class="soft">${e(audit.note)}</p><div class="divider-list scroll-list">${rows}</div></section>`;
 }
 
 function evidencePage() {
@@ -190,6 +212,81 @@ function geometryPage() {
       <section class="card"><h3>Saved geometry</h3><div class="divider-list">${results.map(item=>`<div class="row"><div class="grow">${e(item.title)}<br><small>${e(item.mode)} · revision ${item.specimen.version}</small></div>${btn("Open","metrology-open","tiny secondary",null,`data-id="${item.id}"`)}</div>`).join("")||"<p class='soft'>No saved outlines.</p>"}</div></section></div></div>`;
 }
 
+function routeMetrics(record) {
+  const list=record.candidates||[];
+  const candidate=list.find(item=>item.key===record.recommendation)||list[0];
+  if (!candidate) return "";
+  const m=candidate.metrics;
+  return `<div class="metrics">
+    ${stat("Tape length",`${n(m.path_length)} ${m.length_unit}`)}
+    ${stat("Two-capture support",percent(m.dual_capture_fraction*100))}
+    ${stat("Painted crossings",m.painted_crossings)}
+    ${m.edge_protected_fraction==null?stat("Fragile edge","none marked"):stat("Edge protected",percent(m.edge_protected_fraction*100))}
+  </div>`;
+}
+
+function routeCandidateCard(record,candidate) {
+  const m=candidate.metrics;
+  const adopted=record.adopted?.key===candidate.key;
+  const recommended=record.recommendation===candidate.key;
+  const reason=m.valid?"Admissible":"Rejected";
+  const accent=adopted?"Adopted":recommended?"Recommended":reason;
+  return `<div class="row"><div class="grow">
+    <strong class="row-title">Route ${candidate.key}${adopted?" · adopted":recommended?" · recommended":""}</strong>
+    <small>${n(m.path_length)} ${m.length_unit} · two-capture ${percent(m.dual_capture_fraction*100)} · edge ${m.edge_protected_fraction==null?"—":percent(m.edge_protected_fraction*100)} · crossings ${m.painted_crossings}</small>
+    ${m.valid?"":`<p class="notice warn">${e(m.reasons.join("; "))}</p>`}
+    </div>${record.status!=="adopted"&&m.valid?btn("Adopt "+candidate.key,"route-adopt","tiny primary",null,`data-key="${candidate.key}"`):badge(accent,m.valid?"ready":"caution")}</div>`;
+}
+
+function routeAuditPanel() {
+  const audit=state.audit;
+  if (!audit) return "";
+  const totals=audit.summary;
+  const rows=audit.items.map(item=>{
+    const style=item.state==="covered"?"ready":item.state==="uncovered"?"caution":"";
+    return `<div class="row"><div class="grow">
+      <strong class="row-title">${e(item.key)}${item.type?` · ${e(item.type)}`:""} ${badge(item.state,style)}</strong>
+      <small>covered ${item.covered_fraction==null?"—":percent(item.covered_fraction*100)} · outline ${item.outline_area_px==null?"—":n(item.outline_area_px,1)} px · uncovered ${item.uncovered_area_px==null?"—":n(item.uncovered_area_px,1)} px${item.uncovered_parts.length?` in ${item.uncovered_parts.length} part(s)`:""}</small>
+      ${item.note?`<p class="soft">${e(item.note)}</p>`:""}
+      </div>${btn("Inspect","route-audit-open","tiny secondary",null,`data-key="${e(item.key)}"`)}</div>`;
+  }).join("");
+  return `<section class="card stack"><div class="title-row"><h3>Coverage of saved spots</h3>${badge(audit.route_key+" adopted","ready")}</div>
+    <div class="metrics">${stat("Spots tested",totals.observed)}${stat("Fully covered",totals.covered)}${stat("Partly covered",totals.partial)}${stat("Uncovered",totals.uncovered)}${stat("No outline",totals.without_outline)}</div>
+    <p class="soft">${e(audit.note)}</p>
+    <div class="divider-list scroll-list">${rows}</div></section>`;
+}
+
+function routePage() {
+  const tile=state.tile;
+  const record=state.route;
+  const routes=state.routes||[];
+  let plan=empty("Plan a protective-strip route along photographed cracks, then adopt one path.");
+  if (record) {
+    const path=`/api/routes/${record.id}`;
+    const image=state.routeLayer==="adopted"&&record.adopted?`${path}/image/adopted`:`${path}/image/plan`;
+    const adopted=record.adopted;
+    plan=`<section class="card stack">
+      <div class="title-row"><div><h3>Protective-strip plan</h3><small>Specimen revision ${record.tile_version} · ${e(date(record.created_at))}</small></div>
+        ${adopted?badge("Route "+adopted.key+" adopted","ready"):badge("Plan only","caution")}</div>
+      <div class="actions">${record.adopted?btn("Adopted strip",`route-layer`,state.routeLayer==="adopted"?"tiny primary":"tiny secondary",null,'data-value="adopted"'):""}${btn("Candidate plan","route-layer",state.routeLayer==="plan"?"tiny primary":"tiny secondary",null,'data-value="plan"')}</div>
+      <figure class="stage">${img(image,"Protective-strip route on the registered plane")}</figure>
+      <p class="notice">${e(record.tradeoff)}</p>
+      ${routeMetrics(record)}
+      <div class="divider-list">${(record.candidates||[]).map(item=>routeCandidateCard(record,item)).join("")}</div>
+      ${record.failures&&record.failures.length?`<details><summary>Rejected candidates</summary>${table(["Route","Reason"],record.failures.map(item=>[item.key,item.reason]))}</details>`:""}
+      ${record.evidence?`<details><summary>Evidence used</summary>${table(["Capture","Role","Traced pixels"],record.evidence.photos.map(item=>[item.id.slice(0,8),item.role,n(item.traced_pixels,0)]))}
+        ${record.evidence.skipped.length?table(["Skipped capture","Reason"],record.evidence.skipped.map(item=>[item.photo.slice(0,8),item.reason])):""}
+        <p class="soft">Two-capture pixels ${n(record.evidence.dual_capture_pixels,0)} · single-capture pixels ${n(record.evidence.single_capture_pixels,0)}.</p></details>`:""}
+      ${record.status==="adopted"?`<div class="actions">${btn("Run coverage audit","route-audit","secondary","measure")}</div>`:""}
+    </section>${record.status==="adopted"?routeAuditPanel():""}`;
+  }
+  const history=routes.length?`<div class="divider-list scroll-list">${routes.map(item=>`<div class="row"><div class="grow"><strong class="row-title">${item.status==="adopted"?"Adopted plan":"Plan"} · ${e(date(item.created_at))}</strong><small>${item.status}${item.adopted_key?" · route "+item.adopted_key:""} · ${item.path_length==null?"—":n(item.path_length)+" "+item.length_unit}</small></div>${btn("Open","route-open","tiny secondary",null,`data-id="${item.id}"`)}</div>`).join("")}</div>`:"<p class='soft'>No saved route plans.</p>";
+  return `<div class="grid-detail">${plan}<div class="stack"><section class="card"><h3>Plan a route</h3>
+      <p class="soft">Mark the two ends of an inspection band, the painted lines the strip may cross, the confirmed short cracks it must follow, and any fragile edge to protect.</p>
+      <div class="actions">${btn("Plan tape route","route-new","primary","measure")}</div></section>
+      <section class="card"><h3>Saved route plans</h3>${history}</section></div></div>`;
+}
+
 function receivedPage() {
   const items=state.received||[];
   const chosen=state.receivedActive;
@@ -215,7 +312,7 @@ function tilePage() {
   <p>${e(descriptors.join(" · ") || "Registered core section")}</p></div><div class="actions">${btn("Edit specimen","tile-edit","secondary","edit")}
   ${btn("Approve reference","reference-add","secondary","book")}</div></header>
   <nav class="tabs" aria-label="Specimen tools">${tabs.map(([key,label,glyph])=>`<button type="button" class="tab ${state.tab===key?"active":""}" data-do="tile-tab" data-value="${key}">${icon(glyph)}${e(label)}</button>`).join("")}</nav>
-  ${{captures,regions:regionPage,measure:measurements,geometry:geometryPage,evidence:evidencePage}[state.tab]()}`;
+  ${{captures,regions:regionPage,measure:measurements,route:routePage,geometry:geometryPage,evidence:evidencePage}[state.tab]()}`;
 }
 
 function libraryPage() {
@@ -250,14 +347,15 @@ function render() {
 
 async function gatherTile(token=travel) {
   const url=tileUrl();
-  const [results,packets,activity,refs,metrology]=await Promise.all([
-    api(url+"/results"),api(url+"/evidence"),api(url+"/activity"),api("/api/library"),api(url+"/metrology"),
+  const [results,packets,activity,refs,metrology,routes]=await Promise.all([
+    api(url+"/results"),api(url+"/evidence"),api(url+"/activity"),api("/api/library"),api(url+"/metrology"),api(url+"/routes"),
   ]);
   if (token!==travel) return;
   state.results=results.items;
   state.packets=packets.items;
   state.activity=activity.items;
   state.metrology=metrology.items;
+  state.routes=routes.items;
   state.refs=refs.items;
 }
 
@@ -270,7 +368,7 @@ async function route() {
     const tile=await api(`/api/specimens/${id}`);
     if (token!==travel) return;
     if (state.tile?.id!==tile.id || state.page!=="tile") {
-      state.tab="captures"; state.capture=null; state.result=null;state.layer="overlay";state.viewer="raw";state.metrologyActive=null;
+      state.tab="captures"; state.capture=null; state.result=null;state.layer="overlay";state.viewer="raw";state.metrologyActive=null;state.route=null;state.audit=null;state.resultAudit=null;
     }
     state.tile=tile;
     await gatherTile(token);
@@ -391,6 +489,7 @@ const drawing = (image,alt) => `<div class="stage"><div class="capture-drawing" 
   <svg viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true" id="draw-overlay"></svg></div></div>`;
 
 function drawUpdate() {
+  if (routeDraft) {drawRouteDraft();return;}
   const artist=q("#draw-overlay");
   if (!artist) return;
   const coords=drawPoints.map(([x,y])=>[x*1000,y*1000]);
@@ -547,6 +646,158 @@ function importEvidence() {
     });
 }
 
+let routeDraft=null;
+
+function routeDraftForm() {
+  const base=state.tile.photos.find(item=>item.registration_state==="base");
+  if (!base) throw Error("Set a base capture before planning a tape route.");
+  if (!routeDraft) routeDraft={band:null,cracks:[],painted:[],edges:[],preference:"balanced",options:{},active:"band"};
+  const registered=state.tile.photos.filter(item=>item.registered_url);
+  const kinds=[["band","Band ends",2],["cracks","Confirmed short cracks",40],["painted","Painted lines",40],["edges","Fragile edge",40]];
+  const counts=kinds.map(([key])=>`${key}:${key==="band"?(routeDraft.band?.length||0):routeDraft[key].length}`).join(" · ");
+  modal("Plan a tape route",`
+    <p class="notice">Mark pieces in turn. Choose a kind, then click along it. The band takes exactly two end points; each crack, painted line or edge is a fresh polyline.</p>
+    <div class="form-columns">
+      ${selectField("Marking","route_kind",kinds.map(([key,label])=>option(key,label,routeDraft.active)).join(""))}
+      ${selectField("Preference","preference",["balanced","evidence","edge"].map(key=>option(key,key,routeDraft.preference)).join(""))}
+    </div>
+    <div class="actions">${btn("New line in this kind","route-newline","tiny secondary")}</div>
+    <div class="form-columns">${numField("Band width px","band_width",routeDraft.options.band_width??100,20,240,1)}${numField("Tape width px","tape_width",routeDraft.options.tape_width??18,4,80,1)}
+    ${numField("Painted crossing gap px","crossing_gap",routeDraft.options.crossing_gap??10,3,30,1)}${numField("Edge contact px","edge_contact",routeDraft.options.edge_contact??14,2,60,1)}</div>
+    <div class="form-columns">${numField("Support tolerance px","support_tolerance",routeDraft.options.support_tolerance??2,1,6,0.5)}${numField("Painted corridor px","painted_width",routeDraft.options.painted_width??4,1,12,1)}
+    ${numField("Band-end reach px","endpoint_tolerance",routeDraft.options.endpoint_tolerance??14,2,40,1)}${numField("Fine-line sensitivity","line_sensitivity",routeDraft.options.line_sensitivity??0.72,0,1,0.02)}</div>
+    ${registered.length>1?`<details open><summary>Captures for line evidence</summary><div class="divider-list scroll-list">${registered.map(item=>`<label class="row field check"><input type="checkbox" name="route_photo" value="${item.id}" checked><span class="grow">${e(item.role_label)} · ${e(item.name)}</span></label>`).join("")}</div></details>`:""}
+    ${drawing(base.registered_url,"Specimen plane for tape-route planning")}
+    <div class="actions">${btn("Clear this kind","route-clear","tiny secondary")}${btn("Undo point","draw-undo","tiny ghost")}<span class="soft" id="draw-count"></span></div>
+    <p class="soft">${e(counts)}</p>`,
+    "Plan candidates",async data=>{
+      if (!routeDraft.band||routeDraft.band.length!==2) throw Error("Mark exactly two band ends first.");
+      const photos=[...new Set(data.getAll("route_photo"))];
+      const payload={
+        band:{start:routeDraft.band[0],end:routeDraft.band[1]},
+        confirmed_cracks:routeDraft.cracks.filter(item=>item.length>=2),
+        painted_lines:routeDraft.painted.filter(item=>item.length>=2),
+        fragile_edges:routeDraft.edges.filter(item=>item.length>=2),
+        preference:String(data.get("preference")),
+        photo_ids:photos,
+        crack_visibility:routeDraft.visibility||[],
+        options:routeOptionsFrom(data),
+      };
+      state.route=await api(tileUrl()+"/routes",{method:"POST",body:payload});
+      state.routeLayer="plan";
+      state.audit=null;
+      routeDraft=null;
+      await gatherTile();
+      commitModal();
+      toast("Tape-route candidates planned.");
+      render();
+    },true);
+  prepareRouteDrawing();
+}
+
+function routeOptionsFrom(data) {
+  const keys=["band_width","tape_width","painted_width","support_tolerance","edge_contact","endpoint_tolerance","crossing_gap","line_sensitivity"];
+  return Object.fromEntries(keys.map(key=>[key,Number(data.get(key))]));
+}
+
+function routeKindLimit() {
+  return {band:2,cracks:40,painted:40,edges:40}[routeDraft?.active||"band"]||40;
+}
+
+function routeDraftAppend(point) {
+  if (!routeDraft) return;
+  const kind=routeDraft.active||"band";
+  if (kind==="band") {
+    routeDraft.band=routeDraft.band||[];
+    if (routeDraft.band.length<2) routeDraft.band.push(point);
+  } else {
+    const group=routeDraft[kind];
+    if (!group.length||group[group.length-1].length>=routeKindLimit()) group.push([]);
+    group[group.length-1].push(point);
+    drawPoints=group[group.length-1];
+  }
+  drawUpdate();
+}
+
+function routeDraftLines() {
+  if (!routeDraft) return [];
+  const lines=[];
+  if (routeDraft.band) lines.push({points:routeDraft.band,tone:"band"});
+  [["cracks","crack"],["painted","paint"],["edges","edge"]].forEach(([key,tone])=>{
+    routeDraft[key].forEach(item=>{if (item.length) lines.push({points:item,tone});});
+  });
+  return lines;
+}
+
+function drawRouteDraft() {
+  const artist=q("#draw-overlay");
+  if (!artist||!routeDraft) return;
+  const palette={band:"#efd98a",crack:"#84e8a8",paint:"#b4b8c1",edge:"#7ab8f0"};
+  const parts=[];
+  routeDraftLines().forEach(({points,tone})=>{
+    const coords=points.map(([x,y])=>[x*1000,y*1000]);
+    const tag=coords.length<2?"polyline":"polyline";
+    parts.push(`<${tag} class="draw-line" points="${coords.map(pair=>pair.join(",")).join(" ")}" style="stroke:${palette[tone]};fill:none"/>`);
+    coords.forEach(([x,y])=>parts.push(`<circle cx="${x}" cy="${y}" r="7" style="fill:${palette[tone]};stroke:#1f3127;stroke-width:2"/>`));
+  });
+  artist.innerHTML=parts.join("");
+  const label=q("#draw-count");
+  if (label) {
+    const kind=routeDraft.active||"band";
+    const active=kind==="band"?routeDraft.band||[]:routeDraft[kind].at(-1)||[];
+    label.textContent=`${kind} · ${active.length} point(s) in current piece`;
+  }
+}
+
+function prepareRouteDrawing() {
+  drawPoints=[];
+  drawLimit=1000;
+  drawRouteDraft();
+}
+
+function adoptRoute(key) {
+  if (!state.route) throw Error("Open a route plan first.");
+  modal("Adopt route "+key+"?","<p>This freezes one protective-strip path for the specimen. Later captures and edge marks will not change it.</p>","Adopt route "+key,async ()=>{
+    state.route=await api(`/api/routes/${state.route.id}/adopt`,{method:"POST",body:{candidate:key}});
+    state.routeLayer="adopted";
+    state.audit=null;
+    await gatherTile();
+    commitModal();
+    toast("Tape route adopted.");
+    render();
+  });
+}
+
+async function openRouteAudit() {
+  if (!state.route?.adopted) throw Error("Adopt a route before testing saved spots.");
+  const options=state.results.filter(item=>item.kind==="defects");
+  if (!options.length) throw Error("Run a Surface observations measurement first.");
+  modal("Coverage of saved spots",selectField("Surface observations","result_id",options.map(item=>option(item.id,`${item.label} · revision ${item.source_version} · ${date(item.created_at)}`)).join(""))+
+    '<p class="soft">Every saved spot is tested inside its own stored outline against the frozen tape strip. Spots without an outline are listed separately.</p>',
+    "Run audit",async data=>{
+      state.audit=await api(`/api/routes/${state.route.id}/audit/${data.get("result_id")}`);
+      commitModal();
+      toast("Coverage audit ready.");
+      render();
+    });
+}
+
+function routeAuditView() {
+  if (!state.audit) throw Error("Run a coverage audit first.");
+  routeAuditModal(state.audit,state.auditKey,true);
+}
+
+function routeAuditModal(audit,key,fromRoute) {
+  const item=audit.items.find(entry=>entry.key===key);
+  if (!item) throw Error("That spot is no longer in this audit.");
+  const picture=`/api/routes/${audit.route_id}/audit/${audit.result_id}/${key}.png`;
+  modal("Spot "+key,`
+    <figure class="stage">${img(picture,"Saved spot outline against the adopted strip")}</figure>
+    <div class="metrics">${stat("Covered",item.covered_fraction==null?"—":percent(item.covered_fraction*100))}${stat("Outline area",item.outline_area_px==null?"—":n(item.outline_area_px,1)+" px")}${stat("Uncovered",item.uncovered_area_px==null?"—":n(item.uncovered_area_px,1)+" px")}</div>
+    ${item.uncovered_parts.length?`<h4>Uncovered parts</h4>${table(["Part","Area px","Area mm²","Center"],item.uncovered_parts.map((part,index)=>[index+1,n(part.area_px,1),part.area_mm2==null?"—":n(part.area_mm2,3),part.center.map(value=>n(value,3)).join(", ")]))}`:"<p class='soft'>No uncovered part inside this outline.</p>"}
+    <p class="soft">${e(item.note||"Coverage is measured inside the saved outline, not by re-detecting the spot.")}</p>`);
+}
+
 function qualityForm() {
   modal("Image quality",`
     <div class="form-columns">${selectField("Photo","photo_id",sources(state.tile.photos.filter(photo=>photo.registered_url),currentPhoto()?.id,"Base capture"))}
@@ -643,6 +894,7 @@ async function runMeasurement(data) {
   if (revision!==travel) return;
   state.result=result;
   state.layer="overlay";
+  state.resultAudit=null;
   await gatherTile();
   toast("Measurement saved.");
   render();
@@ -695,8 +947,29 @@ async function doAction(name,target) {
     "region-remove":()=>modal("Remove sampling region?",'<p>Saved measurements retain their snapshot of this region.</p>',"Remove region",async ()=>{
       await patchTile("/regions/"+id,"DELETE",{},"Sampling region removed.");
     }),
-    "draw-clear":()=>{drawPoints=[];drawUpdate();},
-    "draw-undo":()=>{drawPoints.pop();drawUpdate();},
+    "draw-clear":()=>{
+      if (routeDraft) {
+        const kind=routeDraft.active||"band";
+        if (kind==="band") routeDraft.band=[];
+        else routeDraft[kind]=[];
+        drawRouteDraft();
+        return;
+      }
+      drawPoints=[];drawUpdate();
+    },
+    "draw-undo":()=>{
+      if (routeDraft) {
+        const kind=routeDraft.active||"band";
+        if (kind==="band") (routeDraft.band||[]).pop();
+        else if (routeDraft[kind].length) {
+          routeDraft[kind].at(-1).pop();
+          if (!routeDraft[kind].at(-1).length&&routeDraft[kind].length>1) routeDraft[kind].pop();
+        }
+        drawRouteDraft();
+        return;
+      }
+      drawPoints.pop();drawUpdate();
+    },
     neutral:neutralForm,
     "neutral-clear":()=>patchTile("/calibration","DELETE",{},"Neutral-card balance cleared."),
     "reference-add":refForm,
@@ -730,6 +1003,7 @@ async function doAction(name,target) {
     "result-open":async ()=>{
       state.result=await api("/api/results/"+id);
       state.layer="overlay";
+      state.resultAudit=null;
       state.tab="measure";
       render();
     },
@@ -740,6 +1014,48 @@ async function doAction(name,target) {
       render();
     },
     pin:pinForm,
+    "route-new":()=>{routeDraft=null;routeDraftForm();},
+    "route-clear":()=>{
+      if (routeDraft) {
+        const kind=routeDraft.active||"band";
+        if (kind==="band") routeDraft.band=[];
+        else routeDraft[kind]=[];
+        drawRouteDraft();
+      } else {drawPoints=[];drawUpdate();}
+    },
+    "route-newline":()=>{
+      if (!routeDraft) return;
+      const kind=routeDraft.active||"band";
+      if (kind==="band") return;
+      if (routeDraft[kind].length&&!routeDraft[kind].at(-1).length) return;
+      routeDraft[kind].push([]);
+      drawRouteDraft();
+    },
+    "route-open":async ()=>{
+      state.route=await api("/api/routes/"+id);
+      state.routeLayer=state.route.adopted?"adopted":"plan";
+      state.audit=null;
+      state.auditKey=null;
+      state.tab="route";
+      render();
+    },
+    "route-adopt":()=>adoptRoute(target.dataset.key),
+    "route-layer":()=>{state.routeLayer=value;render();},
+    "route-audit":openRouteAudit,
+    "route-audit-open":()=>{state.auditKey=target.dataset.key;routeAuditView();},
+    "defect-audit":async ()=>{
+      if (!state.result) throw Error("Open a Surface observations measurement first.");
+      const adopted=state.routes.find(item=>item.status==="adopted");
+      if (!adopted) throw Error("Adopt a tape route for this specimen first.");
+      const full=await api("/api/routes/"+adopted.id);
+      state.resultAudit=await api(`/api/routes/${adopted.id}/audit/${state.result.id}`);
+      state.adoptedRoute=full;
+      render();
+    },
+    "defect-audit-open":()=>{
+      if (!state.resultAudit) throw Error("Test the saved spots first.");
+      routeAuditModal(state.resultAudit,target.dataset.marker,false);
+    },
     "study-add":studyForm,
     "study-open":()=>{state.study=state.studies.find(item=>item.id===id);render();},
     close:commitModal,
@@ -775,8 +1091,9 @@ document.addEventListener("click",event=>{
     const rect=drawing.getBoundingClientRect();
     const u=Math.min(1,Math.max(0,(event.clientX-rect.left)/rect.width));
     const v=Math.min(1,Math.max(0,(event.clientY-rect.top)/rect.height));
-    drawPoints.push([Number(u.toFixed(6)),Number(v.toFixed(6))]);
-    drawUpdate();
+    const point=[Number(u.toFixed(6)),Number(v.toFixed(6))];
+    if (routeDraft) routeDraftAppend(point);
+    else {drawPoints.push(point);drawUpdate();}
   }
 });
 
@@ -815,6 +1132,10 @@ document.addEventListener("change",event=>{
     const existing=q("#measurement-form");
     existing.outerHTML=measureControls();
     q("#field-kind")?.focus();
+  }
+  if (event.target.id==="field-route_kind") {
+    routeDraft.active=event.target.value;
+    prepareRouteDrawing();
   }
   if (event.target.id==="field-study_kind") studyOptions(event.target.value);
 });

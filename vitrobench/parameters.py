@@ -159,6 +159,18 @@ TOOLS = {
 }
 
 
+ROUTE_FIELDS = {
+    "band_width": {"kind": "integer", "label": "Inspection band width px", "default": 100, "min": 20, "max": 240},
+    "tape_width": {"kind": "integer", "label": "Protective tape width px", "default": 18, "min": 4, "max": 80},
+    "line_sensitivity": {"kind": "number", "label": "Fine-line sensitivity", "default": 0.72, "min": 0, "max": 1, "step": 0.02},
+    "painted_width": {"kind": "integer", "label": "Painted-line corridor px", "default": 4, "min": 1, "max": 12},
+    "support_tolerance": {"kind": "number", "label": "Support tolerance px", "default": 2, "min": 1, "max": 6, "step": 0.5},
+    "edge_contact": {"kind": "number", "label": "Edge contact reach px", "default": 14, "min": 2, "max": 60, "step": 1},
+    "endpoint_tolerance": {"kind": "integer", "label": "Band-end crack reach px", "default": 14, "min": 2, "max": 40},
+    "crossing_gap": {"kind": "integer", "label": "Painted crossing gap px", "default": 10, "min": 3, "max": 30},
+    "apply_neutral": {"kind": "flag", "label": "Apply saved neutral balance", "default": True},
+}
+
 PATH_FIELDS = {
     "start": {"kind": "point", "label": "Start", "default": [.13, .48]},
     "end": {"kind": "point", "label": "End", "default": [.86, .48]},

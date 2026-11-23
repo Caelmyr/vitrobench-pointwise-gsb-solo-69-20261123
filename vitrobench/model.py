@@ -145,6 +145,11 @@ def numeric_pair(value, label, *, lower=None, upper=None):
     return [scalar(number, label, lower=lower, upper=upper) for number in value]
 
 
+def polyline(value, label, *, minimum=2, maximum=90):
+    points = collection(value, label, minimum=minimum, maximum=maximum)
+    return [numeric_pair(item, label, lower=0, upper=1) for item in points]
+
+
 def unique_ids(value, label, *, minimum=0, maximum=32):
     items = collection(value, label, minimum=minimum, maximum=maximum)
     result = [identity(item, label) for item in items]

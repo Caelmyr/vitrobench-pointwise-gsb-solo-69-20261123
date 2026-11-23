@@ -65,6 +65,15 @@ CREATE TABLE IF NOT EXISTS metrology (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS metrology_tile ON metrology(tile_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS routes (
+    id TEXT PRIMARY KEY,
+    tile_id TEXT NOT NULL REFERENCES specimens(id),
+    status TEXT NOT NULL,
+    document TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS routes_tile ON routes(tile_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS routes_status ON routes(tile_id, status);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -474,3 +483,69 @@ class Store:
                 "SELECT document FROM metrology WHERE tile_id=? ORDER BY rowid DESC LIMIT 50", (chosen,),
             ).fetchall()
             return [json.loads(row["document"]) for row in rows]
+
+    def save_route(self, fields):
+        record = {
+            **fields,
+            "id": make_id(),
+            "status": "planned",
+            "created_at": timestamp(),
+            "adopted": None,
+        }
+        with self.transaction(write=True) as conn:
+            conn.execute(
+                "INSERT INTO routes(id,tile_id,status,document,created_at) VALUES (?,?,?,?,?)",
+                (record["id"], record["tile_id"], record["status"], document(record), record["created_at"]),
+            )
+            event(conn, record["tile_id"], "route", f"Planned protective-strip route with {len(record['candidates'])} candidate(s)")
+        return record
+
+    def _route(self, conn, identifier):
+        route_id = identity(identifier, "Tape route ID")
+        row = conn.execute("SELECT document FROM routes WHERE id=?", (route_id,)).fetchone()
+        return artifact_row(row, "Tape route")
+
+    def route(self, identifier):
+        with self.connect() as conn:
+            return self._route(conn, identifier)
+
+    def routes(self, tile_id):
+        source = identity(tile_id, "Specimen ID")
+        with self.connect() as conn:
+            self._tile(conn, source)
+            rows = conn.execute(
+                "SELECT document FROM routes WHERE tile_id=? ORDER BY rowid DESC LIMIT 100", (source,),
+            ).fetchall()
+            return [json.loads(row["document"]) for row in rows]
+
+    def adopted_route(self, tile_id):
+        source = identity(tile_id, "Specimen ID")
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT document FROM routes WHERE tile_id=? AND status='adopted' ORDER BY rowid DESC LIMIT 1",
+                (source,),
+            ).fetchone()
+            return json.loads(row["document"]) if row else None
+
+    def adopt_route(self, identifier, key, frozen, tradeoff, recommendation):
+        with self.transaction(write=True) as conn:
+            record = self._route(conn, identifier)
+            if record["status"] == "adopted":
+                if record["adopted"]["key"] == key:
+                    return record
+                raise ConflictError("A tape route is already adopted for this specimen.")
+            existing = conn.execute(
+                "SELECT id FROM routes WHERE tile_id=? AND status='adopted' LIMIT 1", (record["tile_id"],),
+            ).fetchone()
+            if existing is not None:
+                raise ConflictError("This specimen already has an adopted tape route that must not change.")
+            now = timestamp()
+            record["status"] = "adopted"
+            record["adopted"] = {**frozen, "adopted_at": now}
+            record["version"] = record.get("version", 1) + 1
+            conn.execute(
+                "UPDATE routes SET status=?, document=? WHERE id=?",
+                ("adopted", document(record), record["id"]),
+            )
+            event(conn, record["tile_id"], "route", f"Adopted protective-strip route {key} · {tradeoff}")
+            return record
